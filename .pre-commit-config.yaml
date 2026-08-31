@@ -2,6 +2,13 @@
 # standard hooks + codespell + clang-format for the CUDA / C++ sources).
 # Run:   pre-commit install       # once, to set up the hook
 #        pre-commit run --all-files
+ci:
+    # Report formatting failures without rewriting contributor branches.
+    autofix_prs: false
+    autoupdate_schedule: monthly
+    # Keep every configured hook enabled in pre-commit.ci.
+    skip: []
+
 repos:
 -   repo: https://github.com/astral-sh/ruff-pre-commit
     rev: v0.15.10
