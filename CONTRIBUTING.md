@@ -25,6 +25,23 @@ python -m twine check dist/*
 GPU tests require CuPy. Adapter tests are enabled when their optional
 dependencies are installed.
 
+## Pull request CI
+
+Cuspa uses NVIDIA's ephemeral self-hosted runners. For security, workflows on
+those runners do not execute directly from `pull_request` events. After
+reviewing the latest changes, a maintainer starts CI by commenting on the pull
+request with its latest commit SHA:
+
+```text
+/ok to test <SHA>
+```
+
+NVIDIA's `copy-pr-bot` copies that exact commit to a temporary
+`pull-request/<number>` branch. CI then builds the CUDA 12 and CUDA 13 wheels on
+NVIDIA CPU runners and tests those same wheel artifacts on NVIDIA GPU runners.
+Every new commit requires a new review and `/ok to test <SHA>` comment. The
+temporary branch is removed when the pull request is closed or merged.
+
 ## Signing Your Work
 
 * We require that all contributors "sign-off" on their commits. This certifies that the contribution is your original work, or you have rights to submit it under the same license, or a compatible license.

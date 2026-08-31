@@ -1,0 +1,9 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+# NVIDIA self-hosted runners accept pull request code only after copy-pr-bot
+# publishes the reviewed commit to pull-request/<number> in this repository.
+# https://docs.gha-runners.nvidia.com/platform/apps/copy-pr-bot/
+enabled: true
+auto_sync_draft: false
+auto_sync_ready: false
