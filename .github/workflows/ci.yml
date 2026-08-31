@@ -1,0 +1,383 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - "pull-request/[0-9]+"
+    tags:
+      - "v*"
+  pull_request:
+    branches:
+      - main
+  merge_group:
+    types:
+      - checks_requested
+  workflow_dispatch:
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.ref }}-${{ github.event_name }}"
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+permissions:
+  contents: read
+
+env:
+  PYTHONUNBUFFERED: "1"
+  UV_LINK_MODE: copy
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  pre-commit:
+    name: Quality / pre-commit
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: false
+          version: "0.9.25"
+      - name: Run pre-commit
+        run: >-
+          uvx --from pre-commit==4.6.0 pre-commit run --all-files
+          --show-diff-on-failure
+
+  docs:
+    name: Docs / Sphinx
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: false
+          version: "0.9.25"
+      - name: Install documentation dependencies
+        run: |
+          uv venv --python 3.12 .venv
+          uv pip install --python .venv/bin/python --requirement docs/requirements.txt
+      - name: Build documentation
+        run: >-
+          .venv/bin/sphinx-build -b html -W --keep-going
+          docs docs/_build/html
+      - name: Check documentation links
+        run: >-
+          .venv/bin/sphinx-build -b linkcheck -W --keep-going
+          docs docs/_build/linkcheck
+      - name: Upload rendered documentation
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cuspa-docs
+          path: docs/_build/html
+          if-no-files-found: warn
+          retention-days: 7
+
+  sdist:
+    name: Package / source distribution
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: false
+          version: "0.9.25"
+      - name: Build and validate source distribution
+        run: |
+          uv build --sdist --out-dir dist
+          uvx --from twine==7.0.0 twine check --strict dist/*.tar.gz
+      - name: Upload source distribution
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cuspa-sdist
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  wheels:
+    name: Wheel / cu${{ matrix.cuda }} / ${{ matrix.arch }}
+    runs-on: >-
+      ${{ (github.repository == 'NVIDIA/cuspa' &&
+           github.event_name == 'push' &&
+           vars.CUSPA_NVIDIA_RUNNERS_ENABLED == 'true' &&
+           matrix.nvidia_runner) || matrix.github_runner }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cuda: "12"
+            arch: x86_64
+            github_runner: ubuntu-24.04
+            nvidia_runner: linux-amd64-cpu8
+            image: quay.io/manylinux_cuda/manylinux_2_28_x86_64_cuda12_2@sha256:ebab14ba10620bdb2451ee86c2445f455eee6e6373b31e713b5738e93f3b08b2
+            architectures: "75-real;80-real;86-real;89-real;90"
+          - cuda: "12"
+            arch: aarch64
+            github_runner: ubuntu-24.04-arm
+            nvidia_runner: linux-arm64-cpu8
+            image: quay.io/manylinux_cuda/manylinux_2_28_aarch64_cuda12_2@sha256:1d1af877622abef8d30b1c0718f36c1afc0299e1e98a114c06e3ff58dab4e222
+            architectures: "75-real;80-real;86-real;89-real;90"
+          - cuda: "13"
+            arch: x86_64
+            github_runner: ubuntu-24.04
+            nvidia_runner: linux-amd64-cpu8
+            image: quay.io/manylinux_cuda/manylinux_2_28_x86_64_cuda13_0@sha256:f1a3dcd384bd8de50bfbeff92e75bf830ddcfe44897195d1a82c6ac162c8f36d
+            architectures: "75-real;80-real;86-real;89-real;90-real;100-real;120"
+          - cuda: "13"
+            arch: aarch64
+            github_runner: ubuntu-24.04-arm
+            nvidia_runner: linux-arm64-cpu8
+            image: quay.io/manylinux_cuda/manylinux_2_28_aarch64_cuda13_0@sha256:cdff0d2c97f15c17ac94106b292fd785a14fffae112831ecefd961ab2c22c837
+            architectures: "75-real;80-real;86-real;89-real;90-real;100-real;120"
+    env:
+      CIBW_ARCHS_LINUX: ${{ matrix.arch }}
+      CIBW_BUILD: cp312-manylinux_${{ matrix.arch }}
+      CIBW_BUILD_VERBOSITY: "1"
+      CIBW_ENVIRONMENT: >-
+        CUDA_HOME=/usr/local/cuda
+        LD_LIBRARY_PATH=/usr/local/cuda/lib64:$LD_LIBRARY_PATH
+        PATH=/usr/local/cuda/bin:$PATH
+      CIBW_SKIP: "*-musllinux*"
+      CIBW_TEST_SKIP: "*"
+      CIBW_IMAGE: ${{ matrix.image }}
+      CUDA_ARCHITECTURES: ${{ matrix.architectures }}
+      CUDA_MAJOR: ${{ matrix.cuda }}
+      WHEELHOUSE_DIR: wheelhouse-cu${{ matrix.cuda }}-${{ matrix.arch }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: false
+          version: "0.9.25"
+      - name: Prepare CUDA-specific wheel metadata
+        run: |
+          uv run --isolated --no-project --with tomlkit==0.15.1 \
+            python ci/prepare_cuda_wheel.py \
+            --cuda-major "$CUDA_MAJOR" \
+            --architectures "$CUDA_ARCHITECTURES"
+          python3 -c "import tomllib; tomllib.load(open('pyproject.toml', 'rb'))"
+      - name: Select the pinned CUDA builder image
+        run: |
+          case "$CIBW_ARCHS_LINUX" in
+            aarch64)
+              printf 'CIBW_MANYLINUX_AARCH64_IMAGE=%s\n' "$CIBW_IMAGE" >> "$GITHUB_ENV"
+              ;;
+            x86_64)
+              printf 'CIBW_MANYLINUX_X86_64_IMAGE=%s\n' "$CIBW_IMAGE" >> "$GITHUB_ENV"
+              ;;
+            *)
+              printf 'Unsupported architecture: %s\n' "$CIBW_ARCHS_LINUX" >&2
+              exit 1
+              ;;
+          esac
+      - name: Build wheel
+        uses: pypa/cibuildwheel@8d2b08b68458a16aeb24b64e68a09ab1c8e82084 # v3.4.1
+        with:
+          package-dir: .
+          output-dir: ${{ env.WHEELHOUSE_DIR }}
+      - name: Validate wheel
+        id: validate-wheel
+        run: |
+          mapfile -t wheels < <(
+            find "$WHEELHOUSE_DIR" -maxdepth 1 -type f \
+              -name "cuspa_cu${CUDA_MAJOR}-*.whl" -print
+          )
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            printf 'Expected one wheel; found %s\n' "${#wheels[@]}" >&2
+            printf '%s\n' "${wheels[@]}" >&2
+            exit 1
+          fi
+          wheel="${wheels[0]}"
+          uvx --from auditwheel==6.8.2 auditwheel show "$wheel"
+          uvx --from abi3audit==0.0.26 abi3audit --strict "$wheel"
+          uvx --from twine==7.0.0 twine check --strict "$wheel"
+          printf 'wheel=%s\n' "$wheel" >> "$GITHUB_OUTPUT"
+      - name: Upload wheel
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: cuspa-cu${{ matrix.cuda }}-${{ matrix.arch }}
+          path: ${{ steps.validate-wheel.outputs.wheel }}
+          if-no-files-found: error
+          retention-days: 7
+
+  gpu-tests:
+    name: GPU / cu${{ matrix.cuda }} / ${{ matrix.gpu }}
+    if: >-
+      ${{ github.repository == 'NVIDIA/cuspa' &&
+          vars.CUSPA_NVIDIA_RUNNERS_ENABLED == 'true' &&
+          github.event_name == 'push' }}
+    needs:
+      - wheels
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cuda: "12"
+            gpu: t4
+            runner: linux-amd64-gpu-t4-latest-1
+            python: "3.12"
+            expected_name: T4
+            compute_capability: "7.5"
+            container: nvidia/cuda:12.9.1-devel-ubuntu24.04@sha256:020bc241a628776338f4d4053fed4c38f6f7f3d7eb5919fecb8de313bb8ba47c
+            coverage: ""
+          - cuda: "12"
+            gpu: h100
+            runner: linux-amd64-gpu-h100-latest-1
+            python: "3.13"
+            expected_name: H100
+            compute_capability: "9.0"
+            container: nvidia/cuda:12.9.1-devel-ubuntu24.04@sha256:020bc241a628776338f4d4053fed4c38f6f7f3d7eb5919fecb8de313bb8ba47c
+            coverage: ""
+          - cuda: "13"
+            gpu: blackwell
+            runner: linux-amd64-gpu-rtxpro6000-latest-1
+            python: "3.14"
+            expected_name: RTX PRO 6000 Blackwell
+            compute_capability: "12.0"
+            container: nvidia/cuda:13.1.0-devel-ubuntu24.04@sha256:7f32ae6e575abb29f2dacf6c75fe94a262bb48dcc5196ac833ced59d9fde8107
+            coverage: --cov=cuspa --cov-report=term --cov-report=xml:coverage-cu13-blackwell.xml
+    container:
+      image: ${{ matrix.container }}
+      options: -u root --security-opt seccomp=unconfined --shm-size 16g
+      env:
+        NVIDIA_VISIBLE_DEVICES: ${{ env.NVIDIA_VISIBLE_DEVICES }}
+    env:
+      CUDA_MAJOR: ${{ matrix.cuda }}
+      EXPECTED_COMPUTE_CAPABILITY: ${{ matrix.compute_capability }}
+      EXPECTED_GPU_NAME: ${{ matrix.expected_name }}
+      GPU_LABEL: ${{ matrix.gpu }}
+      PYTEST_COVERAGE_ARGS: ${{ matrix.coverage }}
+      PYTHON_VERSION: ${{ matrix.python }}
+    steps:
+      - name: Install CI prerequisites
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install \
+            --yes --no-install-recommends ca-certificates curl git
+      - name: Check out source
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: false
+          version: "0.9.25"
+      - name: Check GPU allocation
+        run: nvidia-smi
+      - name: Download wheel
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cuspa-cu${{ matrix.cuda }}-x86_64
+          path: wheelhouse-cu${{ matrix.cuda }}-x86_64
+      - name: Install wheel and test dependencies
+        run: |
+          environment=".wheel-venv-cu${CUDA_MAJOR}"
+          uv venv --python "$PYTHON_VERSION" "$environment"
+          uv pip install --python "$environment/bin/python" \
+            "cupy-cuda${CUDA_MAJOR}x[ctk]>=14" \
+            pytest pytest-cov pytest-timeout scipy
+          mapfile -t wheels < <(
+            find "wheelhouse-cu${CUDA_MAJOR}-x86_64" -maxdepth 1 -type f \
+              -name "cuspa_cu${CUDA_MAJOR}-*.whl" -print
+          )
+          if [[ "${#wheels[@]}" -ne 1 ]]; then
+            printf 'Expected one wheel; found %s\n' "${#wheels[@]}" >&2
+            exit 1
+          fi
+          wheel="$(realpath "${wheels[0]}")"
+          uv pip install --python "$environment/bin/python" --no-deps "$wheel"
+          uv pip check --python "$environment/bin/python"
+          "$environment/bin/python" -c \
+            "from importlib.metadata import version; print(version('cuspa-cu${CUDA_MAJOR}'))"
+          "$environment/bin/python" -c "import cupy; cupy.show_config()"
+      - name: Verify the GPU target
+        run: |
+          ".wheel-venv-cu${CUDA_MAJOR}/bin/python" ci/check_gpu_target.py \
+            --name-contains "$EXPECTED_GPU_NAME" \
+            --compute-capability "$EXPECTED_COMPUTE_CAPABILITY"
+      - name: Run tests
+        run: |
+          coverage_args=()
+          if [[ -n "$PYTEST_COVERAGE_ARGS" ]]; then
+            read -r -a coverage_args <<< "$PYTEST_COVERAGE_ARGS"
+          fi
+          ".wheel-venv-cu${CUDA_MAJOR}/bin/python" -m pytest -v \
+            --junitxml="report-wheel-cu${CUDA_MAJOR}-${GPU_LABEL}.xml" \
+            "${coverage_args[@]}"
+      - name: Upload test reports
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: test-results-cu${{ matrix.cuda }}-${{ matrix.gpu }}
+          path: |
+            report-wheel-cu${{ matrix.cuda }}-${{ matrix.gpu }}.xml
+            coverage-cu${{ matrix.cuda }}-${{ matrix.gpu }}.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+  required:
+    name: CI / Required
+    if: always()
+    needs:
+      - pre-commit
+      - docs
+      - sdist
+      - wheels
+      - gpu-tests
+    runs-on: ubuntu-24.04
+    env:
+      GPU_REQUIRED: >-
+        ${{ github.repository == 'NVIDIA/cuspa' &&
+            vars.CUSPA_NVIDIA_RUNNERS_ENABLED == 'true' &&
+            github.event_name == 'push' }}
+      NEEDS_JSON: ${{ toJSON(needs) }}
+    steps:
+      - name: Require expected job results
+        run: |
+          check_result() {
+            local job="$1"
+            local expected="$2"
+            local actual
+            actual="$(jq -r --arg job "$job" '.[$job].result' <<< "$NEEDS_JSON")"
+            printf '%s: %s (expected %s)\n' "$job" "$actual" "$expected"
+            [[ "$actual" == "$expected" ]]
+          }
+
+          status=0
+          check_result pre-commit success || status=1
+          check_result docs success || status=1
+          check_result sdist success || status=1
+          check_result wheels success || status=1
+
+          gpu_expected=skipped
+          if [[ "$GPU_REQUIRED" == true ]]; then
+            gpu_expected=success
+          fi
+          check_result gpu-tests "$gpu_expected" || status=1
+
+          exit "$status"

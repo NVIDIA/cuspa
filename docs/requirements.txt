@@ -1,0 +1,7 @@
+myst-parser>=2
+nvidia-sphinx-theme==0.0.9.post1
+numpydoc>=1.8
+pydata-sphinx-theme>=0.16,<0.17
+sphinx>=8.1
+sphinx-copybutton
+sphinx-design
