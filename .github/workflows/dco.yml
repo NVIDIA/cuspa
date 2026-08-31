@@ -1,0 +1,56 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: DCO
+
+on:
+  pull_request:
+    branches:
+      - main
+
+concurrency:
+  group: "${{ github.workflow }}-${{ github.event.pull_request.number }}"
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  signed-off-commits:
+    name: DCO / Signed-off commits
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out pull request
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Verify commit sign-offs
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          status=0
+          while read -r commit; do
+            author="$(git show --no-patch --format='%an <%ae>' "$commit")"
+            signed_off=false
+            while IFS=: read -r key value; do
+              value="${value# }"
+              if [[ "${key,,}" == signed-off-by && "${value,,}" == "${author,,}" ]]; then
+                signed_off=true
+                break
+              fi
+            done < <(
+              git show --no-patch --format=%B "$commit" |
+                git interpret-trailers --parse
+            )
+            if [[ "$signed_off" != true ]]; then
+              printf 'Missing author sign-off: %s (%s)\n' "$commit" "$author" >&2
+              status=1
+            fi
+          done < <(git rev-list "$BASE_SHA..$HEAD_SHA")
+          exit "$status"

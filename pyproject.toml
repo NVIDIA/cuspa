@@ -1,0 +1,143 @@
+[build-system]
+build-backend = "hatchling.build"
+requires = [
+  "hatchling",
+  "nanobind>=2.2.0",
+  "scikit-build-core[hatchling]>=1.0.1",
+]
+
+[project]
+name = "cuspa"
+version = "0.0.1"
+description = "Lightweight GPU spatial ops for spatial-omics workloads."
+readme = "README.md"
+requires-python = ">=3.12"
+authors = [{ name = "NVIDIA Corporation" }]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Programming Language :: Python :: 3",
+  "Topic :: Scientific/Engineering :: GIS",
+  "Environment :: GPU :: NVIDIA CUDA",
+]
+# Users provide a GPU array library (CuPy or PyTorch) matching their CUDA
+# environment; NumPy is the small common runtime dependency.
+dependencies = ["numpy>=1.23"]
+
+[project.optional-dependencies]
+docs = [
+  "myst-parser>=2",
+  "nvidia-sphinx-theme==0.0.9.post1",
+  "numpydoc>=1.8",
+  "pydata-sphinx-theme>=0.16,<0.17",
+  "sphinx>=8.1",
+  "sphinx-copybutton",
+  "sphinx-design",
+]
+geoarrow = ["pyarrow>=14"]
+geopandas = ["geopandas>=1.0", "pyarrow>=14"]
+spatialdata = [
+  "spatialdata>=0.2",
+  "geopandas>=1.0",
+  "pyarrow>=14",
+  "shapely>=2.0",
+]
+test = ["pytest>=8", "pytest-timeout>=2.3", "scipy>=1.13"]
+
+[project.urls]
+Homepage = "https://github.com/NVIDIA/cuspa"
+Issues = "https://github.com/NVIDIA/cuspa/issues"
+Repository = "https://github.com/NVIDIA/cuspa"
+
+# --- scikit-build-core ------------------------------------------------------
+
+[tool.hatch.build.targets.wheel]
+# Hatchling packages the Python sources; its scikit-build hook installs _core.
+packages = ["python/cuspa"]
+exclude = ["**/*.cu", "**/*.cuh", "**/*.h"]
+
+[tool.hatch.build.targets.wheel.hooks.scikit-build]
+
+[tool.scikit-build]
+build-dir = "build/{wheel_tag}"
+cmake.version = ">=3.26"
+cmake.build-type = "Release"
+ninja.version = ">=1.10"
+wheel.py-api = "cp312"
+# Source builds use the local GPU; CI rewrites this value before each wheel build.
+cmake.define.CMAKE_CUDA_ARCHITECTURES = "native"
+
+# Keep CUDA runtime libraries outside the wheel, as CuPy supplies the matching
+# runtime in the supported GPU environments.
+[tool.cibuildwheel]
+build = ["cp312-manylinux_x86_64", "cp312-manylinux_aarch64"]
+skip = ["*-musllinux*"]
+linux.repair-wheel-command = [
+  "auditwheel repair --exclude 'libcudart.so.*' -w {dest_dir} {wheel}",
+  "pipx run abi3audit --strict --report {wheel}",
+]
+
+# --- pytest -----------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = [
+  "--import-mode=importlib",
+  "--strict-config",
+  "--strict-markers",
+  "--timeout=60",
+]
+
+# --- ruff (mirrors scverse/rapids_singlecell) -------------------------------
+
+[tool.ruff]
+src = ["python"]
+line-length = 88
+lint.select = [
+  "F",       # Pyflakes
+  "E",       # pycodestyle errors
+  "W",       # pycodestyle warnings
+  "I",       # isort
+  "TID",     # flake8-tidy-imports
+  "C4",      # flake8-comprehensions
+  "BLE",     # flake8-blind-except
+  "FBT",     # no boolean positional parameters
+  "UP",      # pyupgrade
+  "TID251",  # banned imports
+  "RUF100",  # report unused noqa
+  "ICN",     # follow import conventions
+  "PTH",     # pathlib > os.path
+  "TC",      # manage type-checking blocks
+  "PLR0917", # ban APIs with too many positional parameters
+]
+lint.ignore = [
+  "E501",   # long lines — comments can be long; code handled by formatter
+  "E731",   # lambda assignment
+  "E741",   # ambiguous variable names (I, O, l)
+  "F403",   # missing docstring in public package
+  "TID252", # relative imports from parent modules — fine inside a package
+]
+
+[tool.ruff.lint.per-file-ignores]
+"docs/*" = ["I"]
+# tests run `cp = pytest.importorskip("cupy")` before other imports, which
+# trips E402. Boolean positional args (FBT) + dense docstring coverage (D)
+# don't apply to test helpers either.
+"tests/*" = ["D", "E402", "FBT", "PLR0917"]
+"benchmarks/*" = ["D", "FBT", "PLR0917"]
+"*/__init__.py" = ["F401"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["cuspa"]
+required-imports = ["from __future__ import annotations"]
+
+[tool.ruff.lint.flake8-import-conventions.extend-aliases]
+geopandas = "gpd"
+
+# --- codespell --------------------------------------------------------------
+
+[tool.codespell]
+skip = "build,data,.git,*.lock,*.parquet,*.zarr,*.zip"
+# Project-specific words that trip codespell:
+ignore-words-list = "nd,arange"
