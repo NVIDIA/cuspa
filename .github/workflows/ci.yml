@@ -191,10 +191,9 @@ jobs:
               ;;
           esac
       - name: Build wheel
-        uses: pypa/cibuildwheel@8d2b08b68458a16aeb24b64e68a09ab1c8e82084 # v3.4.1
-        with:
-          package-dir: .
-          output-dir: ${{ env.WHEELHOUSE_DIR }}
+        run: >-
+          uvx --from cibuildwheel==3.4.1
+          cibuildwheel --output-dir "$WHEELHOUSE_DIR" .
       - name: Validate wheel
         id: validate-wheel
         run: |
