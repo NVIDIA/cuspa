@@ -1,13 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""GeoArrow/GeoPandas adapters.
-
-The compute kernels consume flat GeoArrow-shaped buffers on device. These
-helpers keep Shapely/GeoPandas at the boundary: if a user already has a
-GeoDataFrame we ask it for a GeoArrow table, then copy only Arrow numeric
-buffers to the GPU.
-"""
+"""GeoArrow and GeoPandas adapters."""
 
 from __future__ import annotations
 
@@ -221,12 +215,7 @@ def from_geopandas(
     dtype: Any = None,
     include_z: bool | None = False,
 ) -> Polygons:
-    """Convert an existing GeoPandas GeoDataFrame/GeoSeries to ``Polygons``.
-
-    This is a convenience adapter only. It does not create GeoPandas objects;
-    it consumes one provided by the caller and immediately asks GeoPandas for
-    native GeoArrow buffers.
-    """
+    """Convert a GeoPandas GeoDataFrame or GeoSeries to ``Polygons``."""
     if not hasattr(gdf, "to_arrow"):
         raise TypeError("expected a GeoPandas object with a to_arrow() method")
 

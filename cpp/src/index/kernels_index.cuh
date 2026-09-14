@@ -224,7 +224,6 @@ std::int64_t run_compute_index_size(T const* aabbs,
                                     cudaStream_t stream) {
   DeviceScratch scratch{stream};
 
-  // counts[P]
   DeviceBuffer<std::int32_t> d_counts{static_cast<std::size_t>(num_polygons), stream};
 
   auto const grid = static_cast<unsigned>((num_polygons + FILL_BLOCK - 1) / FILL_BLOCK);

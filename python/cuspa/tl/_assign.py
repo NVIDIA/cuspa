@@ -13,7 +13,6 @@ from .._types import (
     _dtype_name,
     _require_array,
     _require_stream,
-    _to_nanobind_cuda,
 )
 
 Predicate = Literal["contains", "intersects"]
@@ -46,8 +45,6 @@ def _empty_int32_like(ref: Any, shape) -> Any:
         import torch  # type: ignore[import-not-found]
 
         return torch.empty(shape, dtype=torch.int32, device=ref.device)
-    if mod in ("jax", "jaxlib"):
-        raise TypeError("JAX arrays are immutable; pass an explicit `out=` buffer.")
     raise TypeError(f"Cannot auto-allocate for array of type {type(ref)!r}")
 
 
@@ -79,11 +76,7 @@ def assign_points(
     out: Any | None = None,
     stream: int = 0,
 ) -> Any:
-    """Assign each point to the polygon that contains it.
-
-    Uses a uniform-grid spatial index (lazily built and cached on the
-    ``polygons`` container). Typical spatial-omics scale: 10^8–10^9 points
-    against 10^5–10^6 cell polygons.
+    """Assign each point to one polygon.
 
     Parameters
     ----------
@@ -123,22 +116,21 @@ def assign_points(
     idx = polygons.ensure_index(stream=stream)
     edge_flag = _predicate_flag(predicate)
 
-    _nb = _to_nanobind_cuda
     _core.assign_points(
-        _nb(points_xy),
+        points_xy,
         idx.origin_x,
         idx.origin_y,
         idx.cell_size_x,
         idx.cell_size_y,
         idx.nx,
         idx.ny,
-        _nb(idx.grid_offsets),
-        _nb(idx.poly_ids),
-        _nb(idx.aabbs),
-        _nb(polygons.part_offsets),
-        _nb(polygons.ring_offsets),
-        _nb(poly_xy),
-        _nb(out),
+        idx.grid_offsets,
+        idx.poly_ids,
+        idx.aabbs,
+        polygons.part_offsets,
+        polygons.ring_offsets,
+        poly_xy,
+        out,
         edge_flag,
         stream,
     )
@@ -152,13 +144,9 @@ def overlap_pairs(
     predicate: Predicate = "contains",
     stream: int = 0,
 ) -> Any:
-    """Return all ``(point_idx, polygon_idx)`` pairs where the point is in the
-    polygon — the many-to-many counterpart to :func:`assign_points`.
+    """Return all matching ``(point_idx, polygon_idx)`` pairs.
 
-    This is the primitive segger uses for its GNN-based refinement and for
-    compartment / nucleus-cell overlap queries. Unlike ``assign_points``, one
-    point can appear in multiple pairs if it lies in multiple overlapping
-    polygons.
+    A point can appear more than once when polygons overlap.
 
     Parameters
     ----------
@@ -190,33 +178,23 @@ def overlap_pairs(
     idx = polygons.ensure_index(stream=stream)
     edge_flag = _predicate_flag(predicate)
 
-    _nb = _to_nanobind_cuda
-    pts_nb = _nb(points_xy)
-    poly_nb = _nb(poly_xy)
-    goff_nb = _nb(idx.grid_offsets)
-    pids_nb = _nb(idx.poly_ids)
-    aabb_nb = _nb(idx.aabbs)
-    poff_nb = _nb(polygons.part_offsets)
-    roff_nb = _nb(polygons.ring_offsets)
-
     offsets = _empty_int32_like(points_xy, n + 1)
-    off_nb = _nb(offsets)
     K = int(
         _core.overlap_count_and_scan(
-            pts_nb,
+            points_xy,
             idx.origin_x,
             idx.origin_y,
             idx.cell_size_x,
             idx.cell_size_y,
             idx.nx,
             idx.ny,
-            goff_nb,
-            pids_nb,
-            aabb_nb,
-            poff_nb,
-            roff_nb,
-            poly_nb,
-            off_nb,
+            idx.grid_offsets,
+            idx.poly_ids,
+            idx.aabbs,
+            polygons.part_offsets,
+            polygons.ring_offsets,
+            poly_xy,
+            offsets,
             edge_flag,
             stream,
         )
@@ -225,21 +203,21 @@ def overlap_pairs(
     pairs = _empty_int32_like(points_xy, (K, 2))
     if K > 0:
         _core.overlap_emit(
-            pts_nb,
+            points_xy,
             idx.origin_x,
             idx.origin_y,
             idx.cell_size_x,
             idx.cell_size_y,
             idx.nx,
             idx.ny,
-            goff_nb,
-            pids_nb,
-            aabb_nb,
-            poff_nb,
-            roff_nb,
-            poly_nb,
-            off_nb,
-            _nb(pairs),
+            idx.grid_offsets,
+            idx.poly_ids,
+            idx.aabbs,
+            polygons.part_offsets,
+            polygons.ring_offsets,
+            poly_xy,
+            offsets,
+            pairs,
             edge_flag,
             stream,
         )

@@ -38,7 +38,6 @@ def validate_device(
 
 
 def main() -> None:
-    """Check the active CuPy device against the requested CI target."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--name-contains", required=True)
     parser.add_argument("--compute-capability", required=True)

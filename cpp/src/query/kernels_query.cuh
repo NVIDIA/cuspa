@@ -287,8 +287,7 @@ std::int64_t run_overlap_count_and_scan(T const* points_xy,
                                                             d_counts.ptr);
   CS_CHECK(cudaGetLastError());
 
-  // Determine K in int64 first. The public offsets and pair columns are int32,
-  // so fail cleanly instead of allowing a signed scan overflow.
+  // Accumulate K in int64 and reject values that do not fit int32 outputs.
   DeviceBuffer<std::int64_t> d_total{1, stream};
   std::size_t reduce_bytes = 0;
   CS_CHECK(

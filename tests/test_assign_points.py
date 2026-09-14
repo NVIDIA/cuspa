@@ -46,10 +46,8 @@ def test_index_builds_and_is_cached():
     idx2 = polys.ensure_index()
     assert idx1 is idx2  # cached
     assert idx1.num_cells == idx1.nx * idx1.ny
-    # grid_offsets must be non-decreasing
     go = cp.asnumpy(idx1.grid_offsets)
     assert np.all(np.diff(go) >= 0)
-    # total poly_id entries must equal grid_offsets[-1]
     assert int(go[-1]) == int(idx1.poly_ids.shape[0])
 
 
@@ -209,9 +207,7 @@ def test_non_default_cuda_stream():
 
 
 def test_assign_1000_polygons_random_grid():
-    """Non-overlapping 30x30 grid of tiny squares; random points; naive check."""
     rng = np.random.default_rng(42)
-    # 30x30 grid of small squares, centers at integer coords, radius 0.4 so no overlap
     cx = np.tile(np.arange(30), 30).astype(np.float32)
     cy = np.repeat(np.arange(30), 30).astype(np.float32)
     r = 0.4
@@ -221,7 +217,6 @@ def test_assign_1000_polygons_random_grid():
     P = polys.num_polygons
     assert P == 900
 
-    # Random query points across a region that overlaps many squares
     n = 50_000
     pts_host = rng.uniform(-2, 32, size=(n, 2)).astype(np.float32)
     pts = cp.asarray(pts_host)
@@ -242,10 +237,8 @@ def test_assign_1000_polygons_random_grid():
 
 
 def test_assign_large_scale():
-    """Smoke-test a spatial-omics-shaped workload: 1M points, 5k polygons."""
     rng = np.random.default_rng(0)
     P = 5_000
-    # Uniform grid of polygons with some randomness
     side = int(np.sqrt(P))
     centers = (
         np.stack(np.meshgrid(np.arange(side), np.arange(side), indexing="xy"), axis=-1)
@@ -264,10 +257,8 @@ def test_assign_large_scale():
     ids = cs.tl.assign_points(pts, polys)
     cp.cuda.Stream.null.synchronize()
 
-    # Sanity: something was assigned, nothing out of range
     ids_host = cp.asnumpy(ids)
     assert (ids_host >= -1).all()
     assert (ids_host < P).all()
-    # A reasonable fraction should hit something
     hit_frac = (ids_host >= 0).mean()
     assert 0.05 < hit_frac < 0.9, f"unexpected hit fraction: {hit_frac}"

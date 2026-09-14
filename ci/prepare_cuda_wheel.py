@@ -12,7 +12,6 @@ import tomlkit
 
 
 def main() -> None:
-    """Rewrite CUDA-specific wheel metadata in pyproject.toml."""
     parser = argparse.ArgumentParser()
     parser.add_argument("--cuda-major", required=True, choices=("12", "13"))
     parser.add_argument("--architectures", required=True)

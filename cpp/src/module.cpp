@@ -23,7 +23,7 @@ void synchronize_stream(std::uintptr_t stream_handle) {
 }  // namespace cuspa
 
 NB_MODULE(_core, m) {
-  m.doc() = "cuspa: self-contained CUDA spatial index + point assignment";
+  m.doc() = "CUDA spatial indexing and aggregation.";
 
   cuspa::bind_index_ops(m);
   cuspa::bind_query_ops(m);

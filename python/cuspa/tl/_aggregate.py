@@ -12,7 +12,6 @@ from .._types import (
     _array_device,
     _array_mod,
     _require_array,
-    _to_nanobind_cuda,
 )
 from ._assign import _as_2d_xy, assign_points
 
@@ -27,11 +26,7 @@ _FLOAT32_COUNT_LIMIT = 2**24
 
 @dataclass(slots=True)
 class CSRMatrix:
-    """Framework-agnostic CSR container for aggregate results.
-
-    Fields can be CuPy, CUDA PyTorch, or NumPy arrays. Use
-    :meth:`to_cupy_csr` or :meth:`to_torch_sparse` to wrap for downstream.
-    """
+    """CSR matrix backed by CuPy, CUDA PyTorch, or NumPy arrays."""
 
     indptr: Any  # int32[num_cells + 1]
     indices: Any  # int32[K]  gene ids in CSR column order
@@ -45,8 +40,8 @@ class CSRMatrix:
     def to_cupy_csr(self, dtype: Any = "float32") -> Any:
         """Wrap as ``cupyx.scipy.sparse.csr_matrix``.
 
-        ``cupyx.scipy.sparse`` only supports float / complex data, so counts
-        are cast to ``dtype`` (default ``float32``) on the way out.
+        ``cupyx.scipy.sparse`` only supports float and complex data. Counts are
+        cast to ``dtype``, which defaults to ``float32``.
         """
         import cupy as cp  # type: ignore[import-not-found]
         from cupyx.scipy.sparse import csr_matrix  # type: ignore[import-not-found]
@@ -64,7 +59,7 @@ class CSRMatrix:
         )
 
     def to_torch_sparse(self, dtype: Any = None) -> Any:
-        """Wrap the result as a CUDA ``torch.sparse_csr_tensor``."""
+        """Wrap as a ``torch.sparse_csr_tensor``."""
         import torch  # type: ignore[import-not-found]
 
         def as_torch(a: Any) -> Any:
@@ -109,41 +104,7 @@ def _aggregate_one_batch(
     num_cells: int | None = None,
     stream: int = 0,
 ) -> CSRMatrix:
-    """Aggregate one already-resident batch into a CSR.
-
-    This private primitive backs :func:`aggregate_to_cells`. Keeping it
-    separate lets the public iterator retain only the current batch plus its
-    device-resident accumulator.
-
-    Parameters
-    ----------
-    points
-        Device tensor of shape ``(N, 2)`` (float32 or float64).
-    gene_ids
-        Device tensor of shape ``(N,)`` (int32). ``gene_ids[i]`` is the gene
-        index of transcript ``i``. Negative values are treated as unassigned.
-    polygons
-        :class:`cuspa.Polygons`. Its spatial index is built on first
-        call and reused on subsequent calls.
-    num_genes
-        Number of gene columns in the output matrix. Determines the column
-        count of the CSR.
-    num_cells
-        Row count of the CSR. Defaults to ``polygons.num_polygons``.
-    stream
-        CUDA stream handle. ``0`` means the default stream.
-
-    Returns
-    -------
-    :class:`CSRMatrix` — ``indptr`` (``int32[num_cells + 1]``), ``indices``
-    (``int32[K]``, gene IDs), ``data`` (``int32[K]``, counts).
-    ``K`` is the number of unique ``(cell, gene)`` pairs found.
-
-    Notes
-    -----
-    Transient memory is ~40 bytes per transcript during the sort, so a run
-    of 1e8 transcripts needs ~4 GB free. At 1e9 you'll want a 40 GB+ GPU.
-    """
+    """Aggregate one device-resident batch into a CSR matrix."""
     points_xy = _as_2d_xy(points)
     N = int(points_xy.shape[0])
 
@@ -192,23 +153,21 @@ def _aggregate_one_batch(
     indices_scratch = _empty_int32_like(cell_ids, N)
     data_scratch = _empty_int32_like(cell_ids, N)
 
-    _nb = _to_nanobind_cuda
     K = int(
         _core.aggregate_to_cells(
-            _nb(cell_ids),
-            _nb(gene_ids),
+            cell_ids,
+            gene_ids,
             num_cells,
-            _nb(indptr),
-            _nb(indices_scratch),
-            _nb(data_scratch),
+            indptr,
+            indices_scratch,
+            data_scratch,
             stream,
         )
     )
 
-    # Slice + copy so the N-sized scratch can be released.
+    # Copy slices so the N-sized scratch buffers can be released.
     indices = indices_scratch[:K]
     data = data_scratch[:K]
-    # cupy/torch views keep the parent alive; copy to drop the surplus.
     if hasattr(indices, "copy"):
         indices = indices.copy()
         data = data.copy()
@@ -234,24 +193,9 @@ def aggregate_to_cells(
 ) -> CSRMatrix:
     """Aggregate transcript batches into one GPU-resident ``(cells × genes)`` CSR.
 
-    Each item in ``batches`` is a ``(points, gene_ids)`` pair accepted by
-    the private one-batch primitive. The spatial index on ``polygons`` is
-    built on the first batch and reused by every later batch. The first batch
-    becomes the device-resident CSR reference; later batch CSRs are added to
-    it on the GPU. After the final addition, the accumulator is canonicalized
-    (duplicate entries coalesced and column indices sorted), still on the
-    GPU, so it can be handed directly to CuPy or CUDA PyTorch.
-
-    This function consumes batches supplied by the caller; it does not read
-    files or choose a batch size. A source reader should yield one CUDA batch
-    at a time to keep source and GPU input memory bounded.
-
-    This bounds GPU memory by the largest batch plus one final sparse output,
-    rather than the total number of transcripts. The accumulator uses float32
-    temporarily because CuPy sparse matrices do not support integer data. It
-    is exact for per-``(cell, gene)`` counts below ``2**24``; larger counts
-    raise :class:`OverflowError`. Returned arrays are CUDA int32 arrays. Copy
-    them to host only when serializing or otherwise needed.
+    Each batch is a ``(points, gene_ids)`` pair of CuPy arrays. Batches are
+    consumed one at a time; this function does not read files or choose a batch
+    size. The returned CSR has sorted, duplicate-free ``int32`` data.
 
     Parameters
     ----------
@@ -262,17 +206,23 @@ def aggregate_to_cells(
     polygons
         Cell polygons shared by every batch.
     num_genes
-        Number of gene columns in each yielded CSR matrix.
+        Number of gene columns in the output matrix.
     num_cells
-        Row count of each matrix. Defaults to ``polygons.num_polygons``.
+        Output row count. Defaults to ``polygons.num_polygons``.
     stream
-        CUDA stream handle. ``0`` means the default stream.
+        CUDA stream handle for native kernels. ``0`` means the default stream.
+        The corresponding CuPy stream must also be current because buffer
+        copies and sparse merging use CuPy's current stream.
 
     Returns
     -------
     CSRMatrix
-        The exact, canonical sparse count matrix across all batches, stored
-        on the GPU.
+        Sparse count matrix across all batches, stored on the GPU.
+
+    Notes
+    -----
+    Batch merging uses ``float32`` sparse matrices. Counts for a
+    ``(cell, gene)`` pair must be below ``2**24``.
     """
     import cupy as cp  # type: ignore[import-not-found]
 

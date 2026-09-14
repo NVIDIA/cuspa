@@ -1,19 +1,13 @@
-# Contributing to cuspa
-
-Thanks for your interest in contributing to cuspa! Contributions are welcome —
-bug reports, feature requests, documentation, and code.
+# Contributing
 
 ## How to contribute
 
-1. **Open an issue** describing the bug or proposed change before sending a large
-   pull request, so we can agree on the approach.
+1. **Open an issue** before starting a large change.
 2. **Fork** the repository and create a topic branch for your change.
-3. Keep changes focused, add tests where it makes sense, and make sure the
-   existing tests pass.
+3. Keep changes focused and add tests.
 4. **Sign off** every commit (see below) and open a pull request.
 
-Before submitting a change, run the same release gates used for production
-artifacts:
+Before submitting a change, run:
 
 ```bash
 pre-commit run --all-files
@@ -27,7 +21,7 @@ dependencies are installed.
 
 ## Pull request CI
 
-Cuspa uses NVIDIA's ephemeral self-hosted runners. For security, workflows on
+cuspa uses NVIDIA's ephemeral self-hosted runners. For security, workflows on
 those runners do not execute directly from `pull_request` events. After
 reviewing the latest changes, a maintainer starts CI by commenting on the pull
 request with its latest commit SHA:
@@ -42,22 +36,24 @@ NVIDIA CPU runners and tests those same wheel artifacts on NVIDIA GPU runners.
 Every new commit requires a new review and `/ok to test <SHA>` comment. The
 temporary branch is removed when the pull request is closed or merged.
 
-## Signing Your Work
+## Sign off commits
 
-* We require that all contributors "sign-off" on their commits. This certifies that the contribution is your original work, or you have rights to submit it under the same license, or a compatible license.
+* Sign off every commit to certify that you have the right to submit the work
+  under this project's license.
 
-  * Any contribution which contains commits that are not Signed-Off will not be accepted.
+* Add the sign-off with `--signoff` or `-s`:
 
-* To sign off on a commit you simply use the `--signoff` (or `-s`) option when committing your changes:
   ```bash
-  $ git commit -s -m "Add cool feature."
+  git commit --signoff -m "Fix polygon assignment"
   ```
-  This will append the following to your commit message:
+
+  This appends:
+
   ```
   Signed-off-by: Your Name <your@email.com>
   ```
 
-* Full text of the DCO (https://developercertificate.org/):
+* Full text of the [Developer Certificate of Origin](https://developercertificate.org/):
 
   ```
     Developer Certificate of Origin

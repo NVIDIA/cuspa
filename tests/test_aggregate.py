@@ -30,7 +30,6 @@ def _aggregate(points, gene_ids, polygons, num_genes, **kwargs):
 
 def test_aggregate_basic():
     polys = _polys_from_squares([_square(0, 0, 1), _square(10, 10, 1)])
-    # 5 points: 3 in cell 0 (genes 0, 0, 1), 1 in cell 1 (gene 2), 1 unassigned
     points = cp.asarray(
         [
             [0.0, 0.0],  # cell 0, gene 0
@@ -88,7 +87,6 @@ def test_aggregate_to_cells_accumulates_batches_on_device():
 
 
 def test_aggregate_matches_scipy_reference():
-    """Random 50k points × 400 cells × 200 genes; compare against scipy."""
     from scipy.sparse import csr_matrix as sp_csr
 
     rng = np.random.default_rng(7)
@@ -109,7 +107,6 @@ def test_aggregate_matches_scipy_reference():
     pts_host = rng.uniform(-1, side + 1, size=(N, 2)).astype(np.float32)
     genes_host = rng.integers(0, G, size=N).astype(np.int32)
 
-    # GPU
     pts = cp.asarray(pts_host)
     genes = cp.asarray(genes_host)
     gpu_csr = _aggregate(pts, genes, polys, num_genes=G)
