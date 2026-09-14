@@ -1,12 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Optional adapters for external data sources.
-
-Each adapter imports its heavyweight dependency (spatialdata, shapely, …)
-lazily so the core package stays import-safe with no extras installed.
-Install what you need with e.g. ``pip install cuspa[spatialdata]``.
-"""
+"""GeoArrow, GeoPandas, and SpatialData adapters."""
 
 from __future__ import annotations
 

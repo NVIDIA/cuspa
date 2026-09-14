@@ -1,0 +1,78 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Report a bug
+description: Report reproducible behavior that appears to be incorrect.
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thank you for helping improve cuspa.
+
+        Do not disclose security vulnerabilities here. Follow `SECURITY.md` to report them privately.
+
+  - type: input
+    id: version
+    attributes:
+      label: Version or commit
+      description: Identify the affected release, package version, or commit.
+      placeholder: "For example: 1.2.3 or abc1234"
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include the relevant OS, architecture, Python, GPU, driver, CUDA, installation method, and dependency versions. Redact secrets and private data.
+      placeholder: |
+        OS and architecture:
+        Python:
+        GPU, driver, and CUDA:
+        Installation method:
+        Relevant dependencies:
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Provide the smallest example and exact commands that reproduce the problem.
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: Explain what you expected to happen.
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: Explain what happened instead and include relevant logs after removing sensitive information.
+    validations:
+      required: true
+
+  - type: textarea
+    id: additional_context
+    attributes:
+      label: Additional context
+      description: Add regression details, workarounds, or related issues.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Submission checks
+      options:
+        - label: I searched existing issues for the same problem.
+          required: true
+        - label: I removed secrets, credentials, private links, and sensitive data.
+          required: true

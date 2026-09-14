@@ -1,4 +1,4 @@
-# GeoArrow Input
+# GeoArrow input
 
 cuspa's polygon container mirrors the GeoArrow polygon layout:
 
@@ -11,6 +11,8 @@ points_xy      coordinate buffer, shape (N, 2)
 ## Direct GeoArrow input
 
 ```python
+import cuspa as cs
+
 polygons = cs.io.from_geoarrow(table)
 ```
 
@@ -24,16 +26,20 @@ because they require geometry parsing.
 polygons = cs.io.from_geopandas(gdf)
 ```
 
-This is a convenience adapter for callers that already have GeoPandas data.
-Internally it calls:
+`from_geopandas` converts the input with:
 
 ```python
 gdf.to_arrow(geometry_encoding="geoarrow", interleaved=True)
 ```
 
-After conversion, cuspa uses Arrow numeric buffers and GPU arrays. It does not
-construct Shapely transcript points or call Shapely predicates in the compute
-path.
+## SpatialData input
+
+```python
+polygons = cs.io.from_spatialdata(sdata, "cell_boundaries")
+```
+
+`from_spatialdata` reads a named SpatialData shapes element through the
+GeoPandas adapter.
 
 ## Supported geometry
 

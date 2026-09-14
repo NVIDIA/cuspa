@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""cuspa: lightweight GPU spatial ops for spatial-omics workloads."""
+"""GPU spatial operations for spatial omics."""
 
 from __future__ import annotations
 

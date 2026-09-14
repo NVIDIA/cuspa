@@ -58,8 +58,7 @@ html_theme_options = {
     ],
     "show_nav_level": 2,
     "navigation_with_keys": False,
-    # Keep analytics, cookie, and feedback integrations off for private builds.
-    # Enable them only as part of the approved production publishing config.
+    # Disable external integrations while the documentation is private.
     "public_docs_features": False,
     "show_toc_level": 2,
 }

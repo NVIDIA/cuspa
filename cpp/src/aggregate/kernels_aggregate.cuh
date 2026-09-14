@@ -43,8 +43,7 @@ __global__ void build_pair_keys_kernel(std::int32_t const* cell_ids,
     return;
   }
   auto const g = gene_ids[i];
-  // NB: g < 0 is treated as unassigned too (defensive); normal gene IDs fit
-  // in int32 positive range.
+  // Treat negative gene IDs as unassigned.
   if (g < 0) {
     keys[i] = CS_SENTINEL_KEY;
     return;
@@ -146,8 +145,7 @@ std::int64_t run_aggregate_to_cells(std::int32_t const* cell_ids,
                                                 stream));
   }
 
-  // Pull num_runs back to the host.  One sync — the user will likely sync
-  // after anyway since the output is a new CSR.
+  // Copy num_runs to size the decoded output; this synchronizes the stream.
   std::int64_t num_runs_host = 0;
   CS_CHECK(cudaMemcpyAsync(
       &num_runs_host, d_num_runs_dev.ptr, sizeof(std::int64_t), cudaMemcpyDeviceToHost, stream));

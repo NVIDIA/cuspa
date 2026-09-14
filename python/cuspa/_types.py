@@ -1,12 +1,7 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""GeoArrow-shaped polygon container + uniform-grid spatial index.
-
-The :class:`Polygons` container holds the raw offsets + coords on device;
-:meth:`Polygons.ensure_index` lazily builds a :class:`SpatialIndex` that can
-be reused across many point assignments (the common spatial-omics workflow).
-"""
+"""Polygon buffers and spatial indexes."""
 
 from __future__ import annotations
 
@@ -19,16 +14,6 @@ from . import _core
 
 def _array_mod(a: Any) -> str:
     return type(a).__module__.split(".", 1)[0]
-
-
-def _to_nanobind_cuda(a: Any) -> Any:
-    """Return a CUDA array for nanobind's native ndarray conversion.
-
-    Current nanobind releases consume both CuPy and PyTorch arrays directly.
-    Keeping this shim localizes the boundary without making one array provider
-    an undeclared runtime dependency of another.
-    """
-    return a
 
 
 def _dtype_name(a: Any) -> str:
@@ -64,7 +49,7 @@ def _all_finite(a: Any) -> bool:
         import cupy as xp  # type: ignore[import-not-found]
     elif mod == "torch":
         import torch as xp  # type: ignore[import-not-found]
-    else:  # guarded by Polygons.validate; keeps the helper's error focused
+    else:
         return False
     return bool(_scalar(xp.isfinite(a).all()))
 
@@ -128,11 +113,10 @@ def _empty_like(ref: Any, shape: tuple[int, ...] | int, dtype: Any = None) -> An
 
 @dataclass(slots=True)
 class SpatialIndex:
-    """Uniform-grid spatial index over a batch of polygon AABBs.
+    """Uniform-grid spatial index over polygon AABBs.
 
-    Holds a CSR-style mapping ``grid_cell -> [polygon_ids]`` so the query
-    kernel reads only the handful of polygons whose AABB overlaps each
-    point's grid cell, not all of them.
+    ``grid_offsets`` and ``poly_ids`` store a CSR-style mapping from grid cells
+    to polygon IDs.
     """
 
     origin_x: float
@@ -143,7 +127,7 @@ class SpatialIndex:
     ny: int
     grid_offsets: Any  # int32[nx*ny + 1]
     poly_ids: Any  # int32[K]
-    aabbs: Any  # float[P, 4]  (shared w/ Polygons for convenience)
+    aabbs: Any  # float[P, 4]
 
     @property
     def num_cells(self) -> int:
@@ -238,7 +222,7 @@ class Polygons:
         self.validate()
 
     def validate(self) -> None:
-        """Validate buffer metadata before it reaches unchecked CUDA indexing."""
+        """Validate polygon buffers."""
         module = _require_array(
             self.part_offsets, "part_offsets", ndim=1, dtype="int32"
         )
@@ -321,18 +305,16 @@ class Polygons:
     def num_points(self) -> int:
         return int(self.points_xy.shape[0])
 
-    # --- lazy caches --------------------------------------------------------
-
     def ensure_aabbs(self, *, stream: int = 0) -> Any:
         _require_stream(stream)
         if self.aabbs is None:
             self.validate()
             buf = _empty_like(self.points_xy, (self.num_polygons, 4))
             _core.compute_poly_aabbs(
-                _to_nanobind_cuda(self.part_offsets),
-                _to_nanobind_cuda(self.ring_offsets),
-                _to_nanobind_cuda(self.points_xy),
-                _to_nanobind_cuda(buf),
+                self.part_offsets,
+                self.ring_offsets,
+                self.points_xy,
+                buf,
                 stream,
             )
             self.aabbs = buf
@@ -345,11 +327,9 @@ class Polygons:
         ny: int | None = None,
         stream: int = 0,
     ) -> SpatialIndex:
-        """Build (or return cached) uniform-grid index.
+        """Build or return a cached uniform-grid index.
 
-        The default grid is ``ceil(sqrt(P)) × ceil(sqrt(P))`` cells over the
-        union AABB — roughly one polygon per cell on average, the sweet spot
-        for post-segmentation cell polygons that are uniform-ish in size.
+        The default grid dimensions are ``ceil(sqrt(num_polygons))``.
         """
         _require_stream(stream)
         P = self.num_polygons
@@ -375,9 +355,7 @@ class Polygons:
             raise ValueError("nx * ny must fit in int32")
 
         aabbs = self.ensure_aabbs(stream=stream)
-        # AABBs may have just been produced on a caller-provided stream. The
-        # following reductions run through the array provider, so establish a
-        # clear cross-stream boundary before reading them.
+        # Provider reductions may use a different stream than AABB construction.
         if stream:
             _core.synchronize_stream(stream)
 
@@ -386,15 +364,13 @@ class Polygons:
         maxx = float(aabbs[:, 2].max())
         maxy = float(aabbs[:, 3].max())
 
-        # Guard against degenerate bounding boxes: pad by 1 ULP-ish.
+        # Avoid zero-width grid cells for degenerate bounds.
         span_x = maxx - minx
         span_y = maxy - miny
         if span_x <= 0:
             span_x = 1.0
-            maxx = minx + span_x
         if span_y <= 0:
             span_y = 1.0
-            maxy = miny + span_y
         # Inflate the upper bounds so `floor((maxx - origin) / cell)` for a
         # point exactly at maxx still lands in cell nx-1, not nx.
         eps_x = span_x * 1e-6
@@ -404,10 +380,9 @@ class Polygons:
         origin_x = minx
         origin_y = miny
 
-        _nb = _to_nanobind_cuda
         K = int(
             _core.compute_index_size(
-                _nb(aabbs), origin_x, origin_y, cell_size_x, cell_size_y, nx, ny, stream
+                aabbs, origin_x, origin_y, cell_size_x, cell_size_y, nx, ny, stream
             )
         )
         if K > 2**31 - 1:
@@ -420,15 +395,15 @@ class Polygons:
         grid_offsets = _empty_like(self.part_offsets, (nx * ny + 1,))
 
         _core.build_index(
-            _nb(aabbs),
+            aabbs,
             origin_x,
             origin_y,
             cell_size_x,
             cell_size_y,
             nx,
             ny,
-            _nb(poly_ids),
-            _nb(grid_offsets),
+            poly_ids,
+            grid_offsets,
             stream,
         )
         if stream:

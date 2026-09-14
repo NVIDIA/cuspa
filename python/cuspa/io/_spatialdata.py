@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 class Transcripts(NamedTuple):
-    """Lightweight container for a SpatialData points element on GPU.
+    """Transcript coordinates and gene metadata from SpatialData.
 
     Attributes
     ----------
@@ -34,7 +34,6 @@ class Transcripts(NamedTuple):
 
 
 def _require_cupy() -> Any:
-    """Import cupy, with a helpful error if missing."""
     try:
         import cupy as cp
     except ImportError as e:  # pragma: no cover

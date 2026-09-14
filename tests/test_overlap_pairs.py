@@ -24,13 +24,7 @@ def _polys_from_squares(squares):
     return cs.Polygons(part_offsets, ring_offsets, poly_pts)
 
 
-# ---------------------------------------------------------------------------
-# overlap_pairs: many-to-many
-# ---------------------------------------------------------------------------
-
-
 def test_overlap_pairs_disjoint_polygons_match_assign():
-    """When polygons don't overlap, overlap_pairs must agree with assign_points."""
     polys = _polys_from_squares([_square(0, 0, 1), _square(10, 10, 1)])
     points = cp.asarray(
         [
@@ -48,7 +42,6 @@ def test_overlap_pairs_disjoint_polygons_match_assign():
 
 
 def test_overlap_pairs_overlapping_polygons_multi_assign():
-    """A point inside two overlapping polygons must produce two pairs."""
     # Two squares sharing overlap at (0,0)..(1,1)
     polys = _polys_from_squares([_square(0.5, 0.5, 1.0), _square(0.5, 0.5, 0.8)])
     pt_inside_both = (0.5, 0.5)
@@ -56,8 +49,6 @@ def test_overlap_pairs_overlapping_polygons_multi_assign():
     pt_outside = (5.0, 5.0)
     points = cp.asarray([pt_inside_both, pt_inside_one, pt_outside], dtype=cp.float32)
     pairs = cp.asnumpy(cs.tl.overlap_pairs(points, polys))
-    # Point 0 → both polys; point 1 → poly 0 only; point 2 → nothing.
-    # Order within a point follows grid-cell insertion order (by poly idx).
     assert pairs.shape == (3, 2)
     assert sorted(map(tuple, pairs.tolist())) == [(0, 0), (0, 1), (1, 0)]
 
@@ -78,7 +69,6 @@ def test_overlap_pairs_accepts_empty_point_array():
 
 
 def test_overlap_pairs_counts_match_assign_on_random_data():
-    """On a non-overlapping polygon grid, |overlap_pairs| == |assigned|."""
     rng = np.random.default_rng(0)
     side = 20
     cx = np.tile(np.arange(side), side).astype(np.float32)
@@ -94,25 +84,15 @@ def test_overlap_pairs_counts_match_assign_on_random_data():
     pairs = cp.asnumpy(cs.tl.overlap_pairs(pts, polys))
     assigned = (ids >= 0).sum()
     assert pairs.shape[0] == assigned
-    # Every pair's polygon index should equal the assigned id for that point.
     assert np.array_equal(ids[pairs[:, 0]], pairs[:, 1])
 
 
-# ---------------------------------------------------------------------------
-# predicate="intersects": edge-inclusive
-# ---------------------------------------------------------------------------
-
-
 def test_intersects_includes_boundary_points():
-    """Points lying exactly on a polygon edge are excluded by 'contains'
-    (default) and included by 'intersects'."""
     polys = _polys_from_squares([_square(0, 0, 1)])
 
-    # A point exactly on the right edge: x=1, y=0.
     on_edge = cp.asarray([[1.0, 0.0]], dtype=cp.float32)
     interior = cp.asarray([[0.0, 0.0]], dtype=cp.float32)
 
-    # contains: interior OK, edge rejected.
     ids_c = cp.asnumpy(cs.tl.assign_points(on_edge, polys, predicate="contains"))
     assert ids_c.tolist() == [-1]
     ids_c_interior = cp.asnumpy(
@@ -120,7 +100,6 @@ def test_intersects_includes_boundary_points():
     )
     assert ids_c_interior.tolist() == [0]
 
-    # intersects: both included.
     ids_i = cp.asnumpy(cs.tl.assign_points(on_edge, polys, predicate="intersects"))
     assert ids_i.tolist() == [0]
 

@@ -1,8 +1,6 @@
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-"""Integration tests for the optional spatialdata adapter."""
-
 from __future__ import annotations
 
 import pytest
@@ -66,10 +64,8 @@ def test_from_spatialdata_polygons_roundtrip():
 
     assert polys.num_polygons == 2
     assert polys.num_rings == 2
-    # Each square ring has 5 coords (closed)
     assert polys.num_points == 10
 
-    # AABBs match what we'd compute by hand
     aabbs = cp.asnumpy(polys.ensure_aabbs())
     assert np.allclose(aabbs, [[-1, -1, 1, 1], [9, 9, 11, 11]])
 
@@ -82,7 +78,6 @@ def test_transcripts_from_spatialdata_categorical_gene_ids():
     assert tx.gene_ids is not None
     assert tx.gene_names == ["GENE_A", "GENE_B", "GENE_C", "GENE_Z"]
 
-    # Check roundtrip of gene encoding
     gene_ids_host = cp.asnumpy(tx.gene_ids).tolist()
     decoded = [tx.gene_names[i] for i in gene_ids_host]
     assert decoded == ["GENE_A", "GENE_A", "GENE_B", "GENE_C", "GENE_A", "GENE_Z"]

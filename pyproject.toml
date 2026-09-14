@@ -9,7 +9,7 @@ requires = [
 [project]
 name = "cuspa"
 version = "0.0.1"
-description = "Lightweight GPU spatial ops for spatial-omics workloads."
+description = "GPU spatial operations for spatial-omics workloads."
 readme = "README.md"
 requires-python = ">=3.12"
 authors = [{ name = "NVIDIA Corporation" }]
@@ -21,8 +21,7 @@ classifiers = [
   "Topic :: Scientific/Engineering :: GIS",
   "Environment :: GPU :: NVIDIA CUDA",
 ]
-# Users provide a GPU array library (CuPy or PyTorch) matching their CUDA
-# environment; NumPy is the small common runtime dependency.
+# Install the GPU array library separately to match the target CUDA runtime.
 dependencies = ["numpy>=1.23"]
 
 [project.optional-dependencies]
@@ -50,8 +49,6 @@ Homepage = "https://github.com/NVIDIA/cuspa"
 Issues = "https://github.com/NVIDIA/cuspa/issues"
 Repository = "https://github.com/NVIDIA/cuspa"
 
-# --- scikit-build-core ------------------------------------------------------
-
 [tool.hatch.build.targets.wheel]
 # Hatchling packages the Python sources; its scikit-build hook installs _core.
 packages = ["python/cuspa"]
@@ -78,8 +75,6 @@ linux.repair-wheel-command = [
   "pipx run abi3audit --strict --report {wheel}",
 ]
 
-# --- pytest -----------------------------------------------------------------
-
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = [
@@ -88,8 +83,6 @@ addopts = [
   "--strict-markers",
   "--timeout=60",
 ]
-
-# --- ruff (mirrors scverse/rapids_singlecell) -------------------------------
 
 [tool.ruff]
 src = ["python"]
@@ -121,9 +114,8 @@ lint.ignore = [
 
 [tool.ruff.lint.per-file-ignores]
 "docs/*" = ["I"]
-# tests run `cp = pytest.importorskip("cupy")` before other imports, which
-# trips E402. Boolean positional args (FBT) + dense docstring coverage (D)
-# don't apply to test helpers either.
+# Tests import CuPy after importorskip; API docstring and signature rules do not
+# apply to test helpers.
 "tests/*" = ["D", "E402", "FBT", "PLR0917"]
 "benchmarks/*" = ["D", "FBT", "PLR0917"]
 "*/__init__.py" = ["F401"]
@@ -135,9 +127,6 @@ required-imports = ["from __future__ import annotations"]
 [tool.ruff.lint.flake8-import-conventions.extend-aliases]
 geopandas = "gpd"
 
-# --- codespell --------------------------------------------------------------
-
 [tool.codespell]
 skip = "build,data,.git,*.lock,*.parquet,*.zarr,*.zip"
-# Project-specific words that trip codespell:
 ignore-words-list = "nd,arange"
