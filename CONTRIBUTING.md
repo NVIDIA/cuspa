@@ -1,23 +1,80 @@
-# Contributing
+# Contributing to cuspa
 
-## How to contribute
+External contributions are open for bug fixes, documentation improvements, and
+focused features submitted through pull requests. All project participants
+must follow the [Code of Conduct](CODE_OF_CONDUCT.md).
 
-1. **Open an issue** before starting a large change.
-2. **Fork** the repository and create a topic branch for your change.
-3. Keep changes focused and add tests.
-4. **Sign off** every commit (see below) and open a pull request.
+Do not report security vulnerabilities through public issues, discussions, or
+pull requests. Follow the private reporting process in
+[SECURITY.md](SECURITY.md).
 
-Before submitting a change, run:
+## Contribution scope
+
+Open a [GitHub issue](https://github.com/NVIDIA/cuspa/issues/new/choose) before
+starting a large change, changing the public API, adding a dependency, or
+changing compatibility or performance behavior. Keep pull requests focused and
+include tests and documentation for changed behavior.
+
+New source files must include the NVIDIA SPDX copyright and Apache-2.0 license
+headers used by the existing source files.
+
+## Development setup
+
+Install the CUDA and compiler requirements described in the
+[installation guide](docs/install.md). Install CuPy for your CUDA runtime, then
+install cuspa and the contribution tools. Choose one CuPy package:
 
 ```bash
-pre-commit run --all-files
+python -m pip install "cupy-cuda12x[ctk]>=14"  # CUDA 12
+# or: python -m pip install "cupy-cuda13x[ctk]>=14"  # CUDA 13
+python -m pip install -e ".[test]"
+python -m pip install pre-commit build twine
+pre-commit install
+```
+
+## Tests and checks
+
+Run pre-commit for every change:
+
+```bash
+pre-commit run --all-files --show-diff-on-failure
+```
+
+For code changes, run the tests on a supported GPU:
+
+```bash
 python -m pytest -q
+```
+
+For native or packaging changes, build and validate a local wheel:
+
+```bash
 CMAKE_ARGS='-DCMAKE_CUDA_ARCHITECTURES=native' python -m build --wheel
-python -m twine check dist/*
+python -m twine check --strict dist/*.whl
 ```
 
 GPU tests require CuPy. Adapter tests are enabled when their optional
 dependencies are installed.
+
+For documentation changes, build the documentation and check its links:
+
+```bash
+python -m pip install -r docs/requirements.txt
+sphinx-build -b html -W --keep-going docs docs/_build/html
+sphinx-build -b linkcheck -W --keep-going docs docs/_build/linkcheck
+```
+
+## Pull request process
+
+1. Fork the repository and create a topic branch from `main`.
+2. Write commit messages that explain what changed and why.
+3. Sign off every commit as described below.
+4. Run the applicable tests and checks.
+5. Open a pull request targeting `main`. Explain the purpose of the change and
+   link the related issue when applicable.
+
+cuspa maintainers review pull requests and may request changes. A maintainer
+merges a pull request after the required checks pass.
 
 ## Pull request CI
 
@@ -31,20 +88,24 @@ request with its latest commit SHA:
 ```
 
 NVIDIA's `copy-pr-bot` copies that exact commit to a temporary
-`pull-request/<number>` branch. CI then builds the CUDA 12 and CUDA 13 wheels on
-NVIDIA CPU runners and tests those same wheel artifacts on NVIDIA GPU runners.
-Every new commit requires a new review and `/ok to test <SHA>` comment. The
-temporary branch is removed when the pull request is closed or merged.
+`pull-request/<number>` branch. CI builds CUDA 12 and CUDA 13 wheels for x86_64
+and aarch64 on NVIDIA CPU runners, then tests the x86_64 wheel artifacts on
+NVIDIA GPU runners. Every new commit requires a new review and
+`/ok to test <SHA>` comment.
 
-## Sign off commits
+## Signing Off Your Work
 
-* Sign off every commit to certify that you have the right to submit the work
-  under this project's license.
+* We require that all contributors "sign-off" on their commits. This certifies
+  that the contribution is your original work, or you have rights to submit it
+  under the same license, or a compatible license.
 
-* Add the sign-off with `--signoff` or `-s`:
+  * Any contribution which contains commits that are not Signed-Off will not be
+    accepted.
+
+* To sign off on a commit, use the `--signoff` or `-s` option:
 
   ```bash
-  git commit --signoff -m "Fix polygon assignment"
+  git commit -s -m "Fix polygon assignment"
   ```
 
   This appends:
@@ -52,6 +113,8 @@ temporary branch is removed when the pull request is closed or merged.
   ```
   Signed-off-by: Your Name <your@email.com>
   ```
+
+  The name and email in the sign-off must match the commit author.
 
 * Full text of the [Developer Certificate of Origin](https://developercertificate.org/):
 

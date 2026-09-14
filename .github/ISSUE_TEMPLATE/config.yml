@@ -1,0 +1,8 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://www.nvidia.com/en-us/security/report-vulnerability/
+    about: Do not disclose security vulnerabilities in a public issue. Report them privately to NVIDIA PSIRT.

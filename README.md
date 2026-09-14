@@ -63,6 +63,13 @@ csr = cs.tl.aggregate_to_cells(
 See the [documentation](docs/index.md) for installation, usage, geometry input,
 and the API reference.
 
+## Contributing
+
+External contributions are open through pull requests. Report bugs and propose
+changes through [GitHub Issues](https://github.com/NVIDIA/cuspa/issues/new/choose).
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the contribution process. All project
+participants must follow the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## Security
 
 Do not report vulnerabilities through public GitHub issues. See
