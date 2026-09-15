@@ -121,16 +121,17 @@ jobs:
       contents: read
       id-token: write
     env:
-      ARTIFACTORY_OIDC_AUDIENCE: ${{ vars.ARTIFACTORY_OIDC_AUDIENCE }}
       ARTIFACTORY_OIDC_PROVIDER: ${{ vars.ARTIFACTORY_OIDC_PROVIDER }}
       ARTIFACTORY_REPOSITORY: ${{ vars.ARTIFACTORY_REPOSITORY }}
       ARTIFACTORY_URL: ${{ vars.ARTIFACTORY_URL }}
-      NSPECT_ARTIFACT_BASE_URL: ${{ vars.NSPECT_ARTIFACT_BASE_URL }}
+      NSPECT_FINAL_TYPE: ${{ vars.NSPECT_FINAL_TYPE }}
       NSPECT_ID: ${{ vars.NSPECT_ID }}
+      NSPECT_PRERELEASE_TYPE: ${{ vars.NSPECT_PRERELEASE_TYPE }}
       NSPECT_RELEASE_OWNER_EMAIL: ${{ vars.NSPECT_RELEASE_OWNER_EMAIL }}
       NSPECT_RELEASE_OWNER_NAME: ${{ vars.NSPECT_RELEASE_OWNER_NAME }}
       RELEASE_DATE: ${{ needs.validate.outputs.release-date }}
       RELEASE_ID: ${{ needs.validate.outputs.release-id }}
+      RELEASE_IS_PRERELEASE: ${{ github.event.release.prerelease }}
       RELEASE_SHA: ${{ needs.validate.outputs.sha }}
       RELEASE_TAG: ${{ needs.validate.outputs.tag }}
       RELEASE_VERSION: ${{ needs.validate.outputs.version }}
@@ -156,12 +157,10 @@ jobs:
       - name: Validate and describe the release bundle
         id: bundle
         run: |
-          [[ -n "$ARTIFACTORY_OIDC_AUDIENCE" ]]
           [[ -n "$ARTIFACTORY_OIDC_PROVIDER" ]]
           [[ "$ARTIFACTORY_REPOSITORY" =~ ^[A-Za-z0-9._-]+$ ]]
-          [[ "$ARTIFACTORY_URL" =~ ^https://[^/]+/?$ ]]
+          [[ "${ARTIFACTORY_URL%/}" == https://artifactory.nvidia.com ]]
           [[ "$NSPECT_ID" =~ ^NSPECT-[A-Za-z0-9]+-[A-Za-z0-9]+$ ]]
-          [[ "$NSPECT_ARTIFACT_BASE_URL" == https://* ]]
 
           mapfile -t wheels < <(compgen -G 'release-dist/*.whl')
           mapfile -t sdists < <(compgen -G 'release-dist/*.tar.gz')
@@ -184,9 +183,7 @@ jobs:
           done
 
           artifactory_path="cuspa/nspect/${NSPECT_ID}/${RELEASE_ID}/${RELEASE_SHA}"
-          nspect_base="${NSPECT_ARTIFACT_BASE_URL%/}"
-          nspect_base="${nspect_base%/artifactory}"
-          [[ "$nspect_base" =~ ^https://(urm\.nvidia\.com|nvurmind\.nvidia\.com|auth\.build\.nvda\.ai)$ ]]
+          artifactory_base="${ARTIFACTORY_URL%/}"
 
           mapfile -t packages < <(
             find release-dist -maxdepth 1 -type f \
@@ -198,7 +195,7 @@ jobs:
             name="$(basename "$package")"
             digest="$(sha256sum "$package" | cut -d ' ' -f 1)"
             size="$(stat -c %s "$package")"
-            source_pointer="${nspect_base}/artifactory/${ARTIFACTORY_REPOSITORY}/${artifactory_path}/${name}"
+            source_pointer="${artifactory_base}/artifactory/${ARTIFACTORY_REPOSITORY}/${artifactory_path}/${name}"
             printf '%s  %s\n' "$digest" "$name" >> release-dist/SHA256SUMS
             artifacts="$(
               jq -c \
@@ -228,7 +225,6 @@ jobs:
         with:
           disable-auto-build-publish: true
           disable-auto-evidence-collection: true
-          oidc-audience: ${{ vars.ARTIFACTORY_OIDC_AUDIENCE }}
           oidc-provider-name: ${{ vars.ARTIFACTORY_OIDC_PROVIDER }}
       - name: Upload the immutable bundle to Artifactory
         env:
@@ -260,10 +256,17 @@ jobs:
           NSPECT_SSA_CLIENT_SECRET: ${{ secrets.NSPECT_SSA_CLIENT_SECRET }}
         run: |
           for value in \
-            NSPECT_ID NSPECT_RELEASE_OWNER_EMAIL NSPECT_SSA_CLIENT_ID \
+            NSPECT_FINAL_TYPE NSPECT_ID NSPECT_PRERELEASE_TYPE \
+            NSPECT_RELEASE_OWNER_EMAIL NSPECT_SSA_CLIENT_ID \
             NSPECT_SSA_CLIENT_SECRET; do
             [[ -n "${!value}" ]]
           done
+          if [[ "$RELEASE_IS_PRERELEASE" == true ]]; then
+            release_type="$NSPECT_PRERELEASE_TYPE"
+          else
+            [[ "$RELEASE_IS_PRERELEASE" == false ]]
+            release_type="$NSPECT_FINAL_TYPE"
+          fi
 
           basic_auth="$(
             printf '%s' "${NSPECT_SSA_CLIENT_ID}:${NSPECT_SSA_CLIENT_SECRET}" |
@@ -279,7 +282,8 @@ jobs:
               jq -er '.access_token | select(length > 0)'
           )"
           printf '::add-mask::%s\n' "$nspect_token"
-          api="https://nspect.nvidia.com/api/v2/public/programs/${NSPECT_ID}"
+          public_api="https://nspect.nvidia.com/api/v2/public"
+          api="${public_api}/programs/${NSPECT_ID}"
           auth_header="Authorization: Bearer ${nspect_token}"
           release_url="${api}/releases/${RELEASE_TAG}"
           response="${RUNNER_TEMP}/nspect-response.json"
@@ -318,6 +322,58 @@ jobs:
           jq -e --arg name "$RELEASE_TAG" \
             '.success == true and .data.release.name == $name' \
             "$response" > /dev/null
+          release_patch="$(
+            jq -c '
+              {
+                deploymentTypes: {isDownloadable: true},
+                releaseLocations: (
+                  ([.data.release.releaseLocations[]?.name] + ["GitHub"]) |
+                  unique
+                )
+              }
+            ' "$response"
+          )"
+
+          curl --fail-with-body --silent --show-error -H "$auth_header" \
+            "${release_url}/release-types?pageSize=1000" > "$response"
+          jq -e '
+            [.data.releaseTypes[] | select(.regulation != null)] | length == 0
+          ' "$response" > /dev/null
+
+          curl --fail-with-body --silent --show-error -H "$auth_header" \
+            "${public_api}/release-types?pageSize=1000" > "$response"
+          jq -e --arg type "$release_type" '
+            .page.total <= 1000 and
+            ([.data.releaseTypes[] |
+              select(.name == $type and .regulation == null)] | length) == 1
+          ' "$response" > /dev/null
+
+          release_type_body="$(
+            jq -nc --arg type "$release_type" \
+              '{releaseTypes: [{releaseType: $type}]}'
+          )"
+          status="$(
+            curl --silent --show-error -X PUT \
+              -H "$auth_header" -H 'Content-Type: application/json' \
+              --data "$release_type_body" -o "$response" -w '%{http_code}' \
+              "${release_url}/release-types"
+          )"
+          [[ "$status" == 200 ]]
+          jq -e '.success == true' "$response" > /dev/null
+
+          status="$(
+            curl --silent --show-error -X PATCH \
+              -H "$auth_header" \
+              -H 'Content-Type: application/merge-patch+json' \
+              --data "$release_patch" -o "$response" -w '%{http_code}' \
+              "$release_url"
+          )"
+          [[ "$status" == 200 ]]
+          jq -e '
+            .success == true and
+            .data.release.deploymentTypes.isDownloadable == true and
+            ([.data.release.releaseLocations[].name] | index("GitHub")) != null
+          ' "$response" > /dev/null
 
           binary_url="${release_url}/binary-artifacts?pageSize=1000"
           curl --fail-with-body --silent --show-error -H "$auth_header" \
@@ -355,7 +411,9 @@ jobs:
             )"
             [[ "$status" == 202 ]]
             jq -e \
-              '.success == true and .data.status == "PENDING" and (.data.jobURI | startswith("/api/v2/public/jobs/"))' \
+              '.success == true and
+               (.data.status | test("^(PENDING|STARTED|PROCESSING|RETRY|SUCCESS|FAILURE|PROGRESS|REVOKED)$")) and
+               (.data.jobURI | startswith("/api/v2/public/jobs/"))' \
               "$response" > /dev/null
             job_uri="$(jq -er '.data.jobURI' "$response")"
 

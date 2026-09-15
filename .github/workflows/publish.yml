@@ -93,11 +93,9 @@ jobs:
       contents: read
       id-token: write
     env:
-      ARTIFACTORY_OIDC_AUDIENCE: ${{ vars.ARTIFACTORY_OIDC_AUDIENCE }}
       ARTIFACTORY_OIDC_PROVIDER: ${{ vars.ARTIFACTORY_OIDC_PROVIDER }}
       ARTIFACTORY_REPOSITORY: ${{ vars.ARTIFACTORY_REPOSITORY }}
       ARTIFACTORY_URL: ${{ vars.ARTIFACTORY_URL }}
-      NSPECT_ARTIFACT_BASE_URL: ${{ vars.NSPECT_ARTIFACT_BASE_URL }}
       NSPECT_FINAL_TYPE: ${{ vars.NSPECT_FINAL_TYPE }}
       NSPECT_ID: ${{ vars.NSPECT_ID }}
       NSPECT_PRERELEASE_TYPE: ${{ vars.NSPECT_PRERELEASE_TYPE }}
@@ -116,9 +114,8 @@ jobs:
           version: "0.9.25"
       - name: Validate Artifactory configuration
         run: |
-          [[ -n "$ARTIFACTORY_OIDC_AUDIENCE" ]]
           [[ -n "$ARTIFACTORY_OIDC_PROVIDER" ]]
-          [[ "$ARTIFACTORY_URL" =~ ^https://[^/]+/?$ ]]
+          [[ "${ARTIFACTORY_URL%/}" == https://artifactory.nvidia.com ]]
       - name: Authenticate to Artifactory
         uses: jfrog/setup-jfrog-cli@deda456d982fc5e9a7a020b63eb0d2968aedd33e # v5.1.0
         env:
@@ -126,14 +123,13 @@ jobs:
         with:
           disable-auto-build-publish: true
           disable-auto-evidence-collection: true
-          oidc-audience: ${{ vars.ARTIFACTORY_OIDC_AUDIENCE }}
           oidc-provider-name: ${{ vars.ARTIFACTORY_OIDC_PROVIDER }}
       - name: Download and verify the staged bundle
         id: bundle
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          for value in ARTIFACTORY_REPOSITORY NSPECT_ARTIFACT_BASE_URL NSPECT_ID; do
+          for value in ARTIFACTORY_REPOSITORY NSPECT_ID; do
             [[ -n "${!value}" ]]
           done
           [[ "$ARTIFACTORY_REPOSITORY" =~ ^[A-Za-z0-9._-]+$ ]]
@@ -161,9 +157,7 @@ jobs:
               (.artifacts | length) == 5
             ' release-dist/manifest.json > /dev/null
 
-          nspect_base="${NSPECT_ARTIFACT_BASE_URL%/}"
-          nspect_base="${nspect_base%/artifactory}"
-          [[ "$nspect_base" =~ ^https://(urm\.nvidia\.com|nvurmind\.nvidia\.com|auth\.build\.nvda\.ai)$ ]]
+          artifactory_base="${ARTIFACTORY_URL%/}"
           expected_sums="${RUNNER_TEMP}/SHA256SUMS"
           : > "$expected_sums"
           while IFS=$'\t' read -r name size digest source_pointer; do
@@ -171,7 +165,7 @@ jobs:
             [[ "$name" =~ ^cuspa(_cu(12|13))?-[A-Za-z0-9.+]+.*(\.whl|\.tar\.gz)$ ]]
             [[ "$size" =~ ^[0-9]+$ ]]
             [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
-            expected_pointer="${nspect_base}/artifactory/${ARTIFACTORY_REPOSITORY}/${artifactory_path}/${name}"
+            expected_pointer="${artifactory_base}/artifactory/${ARTIFACTORY_REPOSITORY}/${artifactory_path}/${name}"
             [[ "$source_pointer" == "$expected_pointer" ]]
 
             [[ "$(stat -c %s "release-dist/${name}")" == "$size" ]]
