@@ -8,5 +8,9 @@ from __future__ import annotations
 from . import io, tl
 from ._types import Polygons, SpatialIndex
 
+try:
+    from ._version import __version__
+except ModuleNotFoundError:
+    __version__ = "0+unknown"
+
 __all__ = ["Polygons", "SpatialIndex", "io", "tl"]
-__version__ = "0.0.1"

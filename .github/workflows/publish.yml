@@ -1,0 +1,472 @@
+# SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+
+name: Publish Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing GitHub release tag staged in Artifactory
+        required: true
+        type: string
+
+concurrency:
+  group: "publish-release-${{ inputs.tag }}"
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash --noprofile --norc -euo pipefail {0}
+
+jobs:
+  release:
+    name: Publish / Validate release
+    if: github.repository == 'NVIDIA/cuspa'
+    runs-on: linux-amd64-cpu4
+    outputs:
+      prerelease: ${{ steps.release.outputs.prerelease }}
+      release-id: ${{ steps.release.outputs.release-id }}
+      sha: ${{ steps.release.outputs.sha }}
+      tag: ${{ steps.release.outputs.tag }}
+      version: ${{ steps.release.outputs.version }}
+    permissions:
+      contents: read
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+          ref: ${{ inputs.tag }}
+      - name: Validate the existing release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag }}
+        run: |
+          [[ "$GITHUB_REF" == refs/heads/main ]]
+          [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(rc[0-9]+)?$ ]]
+          release_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+          )"
+          jq -e --arg tag "$RELEASE_TAG" \
+            '.draft == false and .immutable == false and .tag_name == $tag' \
+            <<< "$release_json" > /dev/null
+
+          prerelease="$(jq -er '.prerelease | tostring' <<< "$release_json")"
+          version="${RELEASE_TAG#v}"
+          if [[ "$version" == *rc* ]]; then
+            [[ "$prerelease" == true ]]
+          else
+            [[ "$prerelease" == false ]]
+          fi
+
+          sha="$(git rev-parse HEAD)"
+          [[ "$sha" == "$(git rev-list -n 1 "$RELEASE_TAG")" ]]
+          git merge-base --is-ancestor "$sha" refs/remotes/origin/main
+
+          {
+            printf 'prerelease=%s\n' "$prerelease"
+            printf 'release-id=%s\n' "$(jq -er .id <<< "$release_json")"
+            printf 'sha=%s\n' "$sha"
+            printf 'tag=%s\n' "$RELEASE_TAG"
+            printf 'version=%s\n' "$version"
+          } >> "$GITHUB_OUTPUT"
+
+  verify:
+    name: Publish / Verify nSpect approval
+    needs:
+      - release
+    runs-on: linux-amd64-cpu4
+    timeout-minutes: 20
+    environment: release-staging
+    outputs:
+      artifact-name: ${{ steps.bundle.outputs.artifact-name }}
+      tag: ${{ needs.release.outputs.tag }}
+      version: ${{ needs.release.outputs.version }}
+    permissions:
+      actions: read
+      contents: read
+      id-token: write
+    env:
+      ARTIFACTORY_OIDC_PROVIDER: ${{ vars.ARTIFACTORY_OIDC_PROVIDER }}
+      ARTIFACTORY_REPOSITORY: ${{ vars.ARTIFACTORY_REPOSITORY }}
+      ARTIFACTORY_URL: ${{ vars.ARTIFACTORY_URL }}
+      NSPECT_FINAL_TYPE: ${{ vars.NSPECT_FINAL_TYPE }}
+      NSPECT_ID: ${{ vars.NSPECT_ID }}
+      NSPECT_PRERELEASE_TYPE: ${{ vars.NSPECT_PRERELEASE_TYPE }}
+      RELEASE_ID: ${{ needs.release.outputs.release-id }}
+      RELEASE_IS_PRERELEASE: ${{ needs.release.outputs.prerelease }}
+      RELEASE_SHA: ${{ needs.release.outputs.sha }}
+      RELEASE_TAG: ${{ needs.release.outputs.tag }}
+      RELEASE_VERSION: ${{ needs.release.outputs.version }}
+    steps:
+      - name: Use NVIDIA package cache
+        uses: nv-gha-runners/setup-proxy-cache@14229018fe157c83e03c008f27d183d8e99bc67c # main
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+        with:
+          enable-cache: false
+          version: "0.9.25"
+      - name: Validate Artifactory configuration
+        run: |
+          [[ -n "$ARTIFACTORY_OIDC_PROVIDER" ]]
+          [[ "${ARTIFACTORY_URL%/}" == https://artifactory.nvidia.com ]]
+      - name: Authenticate to Artifactory
+        uses: jfrog/setup-jfrog-cli@deda456d982fc5e9a7a020b63eb0d2968aedd33e # v5.1.0
+        env:
+          JF_URL: ${{ env.ARTIFACTORY_URL }}
+        with:
+          disable-auto-build-publish: true
+          disable-auto-evidence-collection: true
+          oidc-provider-name: ${{ vars.ARTIFACTORY_OIDC_PROVIDER }}
+      - name: Download and verify the staged bundle
+        id: bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for value in ARTIFACTORY_REPOSITORY NSPECT_ID; do
+            [[ -n "${!value}" ]]
+          done
+          [[ "$ARTIFACTORY_REPOSITORY" =~ ^[A-Za-z0-9._-]+$ ]]
+          [[ "$NSPECT_ID" =~ ^NSPECT-[A-Za-z0-9]+-[A-Za-z0-9]+$ ]]
+
+          artifactory_path="cuspa/nspect/${NSPECT_ID}/${RELEASE_ID}/${RELEASE_SHA}"
+          mkdir release-dist
+          jf rt download \
+            "${ARTIFACTORY_REPOSITORY}/${artifactory_path}/*" release-dist/ \
+            --fail-no-op=true --flat=true --quiet --recursive=false
+          [[ "$(find release-dist -maxdepth 1 -type f | wc -l)" -eq 7 ]]
+
+          jq -e \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg tag "$RELEASE_TAG" \
+            --arg version "$RELEASE_VERSION" \
+            --arg commit "$RELEASE_SHA" \
+            --argjson releaseId "$RELEASE_ID" '
+              .schemaVersion == 1 and
+              .repository == $repository and
+              .tag == $tag and
+              .version == $version and
+              .commit == $commit and
+              .releaseId == $releaseId and
+              (.artifacts | length) == 5
+            ' release-dist/manifest.json > /dev/null
+
+          artifactory_base="${ARTIFACTORY_URL%/}"
+          expected_sums="${RUNNER_TEMP}/SHA256SUMS"
+          : > "$expected_sums"
+          while IFS=$'\t' read -r name size digest source_pointer; do
+            [[ "$name" == "$(basename "$name")" ]]
+            [[ "$name" =~ ^cuspa(_cu(12|13))?-[A-Za-z0-9.+]+.*(\.whl|\.tar\.gz)$ ]]
+            [[ "$size" =~ ^[0-9]+$ ]]
+            [[ "$digest" =~ ^[0-9a-f]{64}$ ]]
+            expected_pointer="${artifactory_base}/artifactory/${ARTIFACTORY_REPOSITORY}/${artifactory_path}/${name}"
+            [[ "$source_pointer" == "$expected_pointer" ]]
+
+            [[ "$(stat -c %s "release-dist/${name}")" == "$size" ]]
+            [[ "$(sha256sum "release-dist/${name}" | cut -d ' ' -f 1)" == "$digest" ]]
+            printf '%s  %s\n' "$digest" "$name" >> "$expected_sums"
+          done < <(
+            jq -r '.artifacts[] | [.name, .size, .sha256, .sourcePointer] | @tsv' \
+              release-dist/manifest.json
+          )
+          cmp "$expected_sums" release-dist/SHA256SUMS
+
+          mapfile -t wheels < <(compgen -G 'release-dist/*.whl')
+          mapfile -t sdists < <(compgen -G 'release-dist/*.tar.gz')
+          [[ "${#wheels[@]}" -eq 4 ]]
+          [[ "${#sdists[@]}" -eq 1 ]]
+          [[ -f "release-dist/cuspa-${RELEASE_VERSION}.tar.gz" ]]
+          for cuda in 12 13; do
+            for arch in x86_64 aarch64; do
+              mapfile -t matches < <(
+                compgen -G \
+                  "release-dist/cuspa_cu${cuda}-${RELEASE_VERSION}-*-${arch}.whl"
+              )
+              [[ "${#matches[@]}" -eq 1 ]]
+            done
+          done
+
+          uvx --from twine==7.0.0 twine check --strict \
+            release-dist/*.whl release-dist/*.tar.gz
+          for wheel in "${wheels[@]}"; do
+            uvx --from abi3audit==0.0.26 abi3audit --strict "$wheel"
+          done
+
+          release_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}"
+          )"
+          jq -e '.draft == false and .immutable == false' \
+            <<< "$release_json" > /dev/null
+          while IFS=$'\t' read -r name digest; do
+            expected="$(
+              jq -er --arg name "$name" \
+                '.artifacts[] | select(.name == $name) | "sha256:" + .sha256' \
+                release-dist/manifest.json
+            )"
+            [[ "$digest" == "$expected" ]]
+          done < <(
+            jq -r '.assets[] | [.name, .digest] | @tsv' <<< "$release_json"
+          )
+
+          artifact_name="cuspa-release-${RELEASE_TAG}"
+          printf 'artifact-name=%s\n' "$artifact_name" >> "$GITHUB_OUTPUT"
+      - name: Require nSpect launch readiness
+        env:
+          NSPECT_SSA_CLIENT_ID: ${{ secrets.NSPECT_SSA_CLIENT_ID }}
+          NSPECT_SSA_CLIENT_SECRET: ${{ secrets.NSPECT_SSA_CLIENT_SECRET }}
+        run: |
+          [[ -n "$NSPECT_SSA_CLIENT_ID" ]]
+          [[ -n "$NSPECT_SSA_CLIENT_SECRET" ]]
+          if [[ "$RELEASE_IS_PRERELEASE" == true ]]; then
+            release_type="$NSPECT_PRERELEASE_TYPE"
+          else
+            release_type="$NSPECT_FINAL_TYPE"
+          fi
+          [[ -n "$release_type" ]]
+
+          basic_auth="$(
+            printf '%s' "${NSPECT_SSA_CLIENT_ID}:${NSPECT_SSA_CLIENT_SECRET}" |
+              base64 | tr -d '\n'
+          )"
+          nspect_token="$(
+            curl --fail-with-body --silent --show-error \
+              -H "Authorization: Basic ${basic_auth}" \
+              -H 'Content-Type: application/x-www-form-urlencoded' \
+              --data-urlencode 'grant_type=client_credentials' \
+              --data-urlencode 'scope=public.api:read public.api:write' \
+              'https://4ubglassowmtsi7ogqwarmut7msn1q5ynts62fwnr1i.ssa.nvidia.com/token' |
+              jq -er '.access_token | select(length > 0)'
+          )"
+          printf '::add-mask::%s\n' "$nspect_token"
+          auth_header="Authorization: Bearer ${nspect_token}"
+          release_url="https://nspect.nvidia.com/api/v2/public/programs/${NSPECT_ID}/releases/${RELEASE_TAG}"
+          response="${RUNNER_TEMP}/nspect-response.json"
+
+          curl --fail-with-body --silent --show-error -H "$auth_header" \
+            "${release_url}/binary-artifacts?pageSize=1000" > "$response"
+          jq -e --slurpfile manifest release-dist/manifest.json '
+            ($manifest[0].artifacts | map(.sourcePointer) | sort) as $expected |
+            (.page.total <= 1000) and
+            ([.data.binaryArtifacts[].sourcePointer] | sort) == $expected and
+            ([.data.binaryArtifacts[] | select(.includedInRelease != true)] |
+              length == 0)
+          ' "$response" > /dev/null
+
+          curl --fail-with-body --silent --show-error -H "$auth_header" \
+            "${release_url}/release-types?pageSize=1000" > "$response"
+          jq -e \
+            '.page.total == 1 and (.data.releaseTypes | length) == 1' \
+            "$response" > /dev/null
+          mapfile -t selected_types < <(
+            jq -er '.data.releaseTypes[] | select(.regulation == null) | .name' \
+              "$response"
+          )
+          [[ "${#selected_types[@]}" -eq 1 ]]
+          [[ "${selected_types[0]}" == "$release_type" ]]
+
+          encoded_type="$(jq -rn --arg value "$release_type" '$value | @uri')"
+          launch_url="https://nspect.nvidia.com/api/v2/launch/programs/${NSPECT_ID}/releases/${RELEASE_TAG}?releaseType=${encoded_type}"
+          completed=false
+          for attempt in {1..20}; do
+            headers="${RUNNER_TEMP}/nspect-headers"
+            status="$(
+              curl --silent --show-error -D "$headers" -H "$auth_header" \
+                -o "$response" -w '%{http_code}' "$launch_url"
+            )"
+            case "$status" in
+              200)
+                if ! jq -e \
+                  --arg id "$NSPECT_ID" --arg release "$RELEASE_TAG" '
+                    .success == true and
+                    .data.nspectId == $id and
+                    .data.releaseVersion == $release and
+                    .data.launchResult == "pass" and
+                    (.data.partial // false) == false
+                  ' "$response" > /dev/null; then
+                  jq . "$response" >&2
+                  exit 1
+                fi
+                completed=true
+                break
+                ;;
+              429)
+                retry_after="$(
+                  awk 'tolower($1) == "retry-after:" {gsub("\\r", "", $2); print $2}' \
+                    "$headers"
+                )"
+                [[ "$retry_after" =~ ^[0-9]+$ ]]
+                [[ "$retry_after" -le 60 ]]
+                sleep "$retry_after"
+                ;;
+              500|504)
+                sleep "$((attempt < 6 ? attempt * 5 : 30))"
+                ;;
+              *)
+                printf 'nSpect Launch returned HTTP %s.\n' "$status" >&2
+                jq . "$response" >&2
+                exit 1
+                ;;
+            esac
+          done
+          [[ "$completed" == true ]]
+      - name: Save the approved bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ${{ steps.bundle.outputs.artifact-name }}
+          path: release-dist
+          if-no-files-found: error
+          retention-days: 7
+
+  kitmaker-validate:
+    name: Publish / Kitmaker check / ${{ matrix.project }}
+    needs:
+      - verify
+    runs-on: linux-amd64-cpu4
+    timeout-minutes: 100
+    environment: release-staging
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - project: cuspa
+            project-id: ${{ vars.KITMAKER_PROJECT_ID_CUSPA }}
+            pattern: ^cuspa-[A-Za-z0-9.+]+\.tar\.gz$
+            count: 1
+          - project: cuspa-cu12
+            project-id: ${{ vars.KITMAKER_PROJECT_ID_CUSPA_CU12 }}
+            pattern: ^cuspa_cu12-[A-Za-z0-9.+]+-.*\.whl$
+            count: 2
+          - project: cuspa-cu13
+            project-id: ${{ vars.KITMAKER_PROJECT_ID_CUSPA_CU13 }}
+            pattern: ^cuspa_cu13-[A-Za-z0-9.+]+-.*\.whl$
+            count: 2
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ needs.verify.outputs.tag }}
+      - name: Download the approved bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.verify.outputs.artifact-name }}
+          path: release-dist
+      - name: Validate with Kitmaker
+        env:
+          EXPECTED_COUNT: ${{ matrix.count }}
+          KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_PORTAL_AUTHORIZATION }}
+          KITMAKER_PIC_EMAIL: ${{ secrets.KITMAKER_PORTAL_ACC_OWNER_EMAIL }}
+          PROJECT_ID: ${{ matrix.project-id }}
+          PROJECT_NAME: ${{ matrix.project }}
+          PROJECT_PATTERN: ${{ matrix.pattern }}
+        run: |
+          bash --noprofile --norc ci/kitmaker_release.sh \
+            false "$PROJECT_ID" "$PROJECT_NAME" "$KITMAKER_PIC_EMAIL" \
+            "$PROJECT_PATTERN" "$EXPECTED_COUNT" release-dist/manifest.json
+
+  kitmaker-publish:
+    name: Publish / Kitmaker / ${{ matrix.project }}
+    needs:
+      - verify
+      - kitmaker-validate
+    runs-on: linux-amd64-cpu4
+    timeout-minutes: 110
+    environment: publish
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - project: cuspa
+            project-id: ${{ vars.KITMAKER_PROJECT_ID_CUSPA }}
+            pattern: ^cuspa-[A-Za-z0-9.+]+\.tar\.gz$
+            count: 1
+          - project: cuspa-cu12
+            project-id: ${{ vars.KITMAKER_PROJECT_ID_CUSPA_CU12 }}
+            pattern: ^cuspa_cu12-[A-Za-z0-9.+]+-.*\.whl$
+            count: 2
+          - project: cuspa-cu13
+            project-id: ${{ vars.KITMAKER_PROJECT_ID_CUSPA_CU13 }}
+            pattern: ^cuspa_cu13-[A-Za-z0-9.+]+-.*\.whl$
+            count: 2
+    steps:
+      - name: Check out the release tag
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+          ref: ${{ needs.verify.outputs.tag }}
+      - name: Download the approved bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.verify.outputs.artifact-name }}
+          path: release-dist
+      - name: Publish with Kitmaker
+        env:
+          EXPECTED_COUNT: ${{ matrix.count }}
+          KITMAKER_API_TOKEN: ${{ secrets.KITMAKER_PORTAL_AUTHORIZATION }}
+          KITMAKER_PIC_EMAIL: ${{ secrets.KITMAKER_PORTAL_ACC_OWNER_EMAIL }}
+          PROJECT_ID: ${{ matrix.project-id }}
+          PROJECT_NAME: ${{ matrix.project }}
+          PROJECT_PATTERN: ${{ matrix.pattern }}
+        run: |
+          bash --noprofile --norc ci/kitmaker_release.sh \
+            true "$PROJECT_ID" "$PROJECT_NAME" "$KITMAKER_PIC_EMAIL" \
+            "$PROJECT_PATTERN" "$EXPECTED_COUNT" release-dist/manifest.json
+
+  github:
+    name: Publish / GitHub assets
+    needs:
+      - verify
+      - kitmaker-publish
+    runs-on: linux-amd64-cpu4
+    permissions:
+      contents: write
+    steps:
+      - name: Download the approved bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: ${{ needs.verify.outputs.artifact-name }}
+          path: release-dist
+      - name: Attach the packages to the existing release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.verify.outputs.tag }}
+        run: |
+          release_json="$(
+            gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}"
+          )"
+          jq -e '.draft == false and .immutable == false' \
+            <<< "$release_json" > /dev/null
+          mapfile -t packages < <(
+            find release-dist -maxdepth 1 -type f \
+              \( -name '*.whl' -o -name '*.tar.gz' \) -print | sort
+          )
+          [[ "${#packages[@]}" -eq 5 ]]
+          upload=()
+          for package in "${packages[@]}"; do
+            name="$(basename "$package")"
+            digest="sha256:$(sha256sum "$package" | cut -d ' ' -f 1)"
+            remote_digest="$(
+              jq -r --arg name "$name" \
+                '.assets[] | select(.name == $name) | .digest' \
+                <<< "$release_json"
+            )"
+            if [[ -n "$remote_digest" ]]; then
+              [[ "$remote_digest" == "$digest" ]]
+            else
+              upload+=("$package")
+            fi
+          done
+          if [[ "${#upload[@]}" -gt 0 ]]; then
+            gh release upload "$RELEASE_TAG" "${upload[@]}" \
+              --repo "$GITHUB_REPOSITORY"
+          fi
