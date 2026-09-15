@@ -2,13 +2,14 @@
 build-backend = "hatchling.build"
 requires = [
   "hatchling",
+  "hatch-vcs>=0.5",
   "nanobind>=2.2.0",
   "scikit-build-core[hatchling]>=1.0.1",
 ]
 
 [project]
 name = "cuspa"
-version = "0.0.1"
+dynamic = ["version"]
 description = "GPU spatial operations for spatial-omics workloads."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -26,6 +27,8 @@ dependencies = ["numpy>=1.23"]
 
 [project.optional-dependencies]
 docs = [
+  "hatch-vcs>=0.5",
+  "hatchling",
   "myst-parser>=2",
   "nvidia-sphinx-theme==0.0.9.post1",
   "numpydoc>=1.8",
@@ -48,6 +51,16 @@ test = ["pytest>=8", "pytest-timeout>=2.3", "scipy>=1.13"]
 Homepage = "https://github.com/NVIDIA/cuspa"
 Issues = "https://github.com/NVIDIA/cuspa/issues"
 Repository = "https://github.com/NVIDIA/cuspa"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+version_scheme = "guess-next-dev"
+local_scheme = "node-and-date"
+
+[tool.hatch.build.hooks.vcs]
+version-file = "python/cuspa/_version.py"
 
 [tool.hatch.build.targets.wheel]
 # Hatchling packages the Python sources; its scikit-build hook installs _core.

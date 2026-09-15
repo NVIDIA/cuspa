@@ -3,20 +3,24 @@
 
 from __future__ import annotations
 
+import subprocess
 import sys
-import tomllib
 from pathlib import Path
 
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE.parent / "python"))
 
-with (HERE.parent / "pyproject.toml").open("rb") as pyproject_file:
-    package_metadata = tomllib.load(pyproject_file)["project"]
-
 project = "cuspa"
 author = "NVIDIA Corporation"
 copyright = "2026, NVIDIA Corporation"
-version = release = package_metadata["version"]
+release = subprocess.run(
+    [sys.executable, "-m", "hatchling", "version"],
+    cwd=HERE.parent,
+    check=True,
+    capture_output=True,
+    text=True,
+).stdout.strip()
+version = release
 
 extensions = [
     "myst_parser",
