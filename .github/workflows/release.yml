@@ -4,12 +4,12 @@
 name: Prepare Release
 
 on:
-  release:
-    types:
-      - published
+  push:
+    tags:
+      - "v*"
 
 concurrency:
-  group: "prepare-release-${{ github.event.release.tag_name }}"
+  group: "prepare-release-${{ github.ref_name }}"
   cancel-in-progress: false
 
 permissions:
@@ -25,8 +25,8 @@ jobs:
     if: github.repository == 'NVIDIA/cuspa'
     runs-on: linux-amd64-cpu4
     outputs:
+      prerelease: ${{ steps.release.outputs.prerelease }}
       release-date: ${{ steps.release.outputs.release-date }}
-      release-id: ${{ steps.release.outputs.release-id }}
       sha: ${{ steps.release.outputs.sha }}
       source-date-epoch: ${{ steps.release.outputs.source-date-epoch }}
       tag: ${{ steps.release.outputs.tag }}
@@ -41,7 +41,7 @@ jobs:
         with:
           fetch-depth: 0
           persist-credentials: false
-          ref: ${{ github.event.release.tag_name }}
+          ref: ${{ github.ref }}
       - name: Install uv
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
         with:
@@ -50,29 +50,11 @@ jobs:
       - name: Validate the release
         id: release
         env:
-          GH_TOKEN: ${{ github.token }}
-          IS_PRERELEASE: ${{ github.event.release.prerelease }}
-          PUBLISHED_AT: ${{ github.event.release.published_at }}
-          RELEASE_ID: ${{ github.event.release.id }}
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
+          [[ "$GITHUB_REF" == "refs/tags/${RELEASE_TAG}" ]]
           [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(rc[0-9]+)?$ ]]
-          [[ "$RELEASE_ID" =~ ^[0-9]+$ ]]
-
           version="${RELEASE_TAG#v}"
-          if [[ "$version" == *rc* ]]; then
-            [[ "$IS_PRERELEASE" == "true" ]]
-          else
-            [[ "$IS_PRERELEASE" == "false" ]]
-          fi
-
-          release_json="$(
-            gh api "repos/${GITHUB_REPOSITORY}/releases/${RELEASE_ID}"
-          )"
-          jq -e \
-            --arg tag "$RELEASE_TAG" \
-            '.draft == false and .immutable == false and .tag_name == $tag and (.assets | length) == 0' \
-            <<< "$release_json" > /dev/null
 
           sha="$(git rev-parse HEAD)"
           [[ "$sha" == "$(git rev-list -n 1 "$RELEASE_TAG")" ]]
@@ -87,11 +69,15 @@ jobs:
           )"
           [[ "$package_version" == "$version" ]]
 
-          release_date="${PUBLISHED_AT%%T*}"
-          [[ "$release_date" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]]
+          prerelease=false
+          if [[ "$version" == *rc* ]]; then
+            prerelease=true
+          fi
+          release_date="$(date -u -d "@${source_date_epoch}" +%F)"
+
           {
+            printf 'prerelease=%s\n' "$prerelease"
             printf 'release-date=%s\n' "$release_date"
-            printf 'release-id=%s\n' "$RELEASE_ID"
             printf 'sha=%s\n' "$sha"
             printf 'source-date-epoch=%s\n' "$source_date_epoch"
             printf 'tag=%s\n' "$RELEASE_TAG"
@@ -113,8 +99,8 @@ jobs:
     needs:
       - validate
       - packages
-    runs-on: linux-amd64-cpu4
-    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     environment: release-staging
     permissions:
       actions: read
@@ -130,14 +116,11 @@ jobs:
       NSPECT_RELEASE_OWNER_EMAIL: ${{ vars.NSPECT_RELEASE_OWNER_EMAIL }}
       NSPECT_RELEASE_OWNER_NAME: ${{ vars.NSPECT_RELEASE_OWNER_NAME }}
       RELEASE_DATE: ${{ needs.validate.outputs.release-date }}
-      RELEASE_ID: ${{ needs.validate.outputs.release-id }}
-      RELEASE_IS_PRERELEASE: ${{ github.event.release.prerelease }}
+      RELEASE_IS_PRERELEASE: ${{ needs.validate.outputs.prerelease }}
       RELEASE_SHA: ${{ needs.validate.outputs.sha }}
       RELEASE_TAG: ${{ needs.validate.outputs.tag }}
       RELEASE_VERSION: ${{ needs.validate.outputs.version }}
     steps:
-      - name: Use NVIDIA package cache
-        uses: nv-gha-runners/setup-proxy-cache@14229018fe157c83e03c008f27d183d8e99bc67c # main
       - name: Download wheels
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
@@ -158,7 +141,7 @@ jobs:
         id: bundle
         run: |
           [[ -n "$ARTIFACTORY_OIDC_PROVIDER" ]]
-          [[ "$ARTIFACTORY_REPOSITORY" =~ ^[A-Za-z0-9._-]+$ ]]
+          [[ "$ARTIFACTORY_REPOSITORY" == sw-cuspa-generic-local ]]
           [[ "${ARTIFACTORY_URL%/}" == https://artifactory.nvidia.com ]]
           [[ "$NSPECT_ID" =~ ^NSPECT-[A-Za-z0-9]+-[A-Za-z0-9]+$ ]]
 
@@ -182,7 +165,7 @@ jobs:
             uvx --from abi3audit==0.0.26 abi3audit --strict "$wheel"
           done
 
-          artifactory_path="cuspa/nspect/${NSPECT_ID}/${RELEASE_ID}/${RELEASE_SHA}"
+          artifactory_path="cuspa/nspect/${NSPECT_ID}/${RELEASE_TAG}/${RELEASE_SHA}"
           artifactory_base="${ARTIFACTORY_URL%/}"
 
           mapfile -t packages < <(
@@ -213,19 +196,42 @@ jobs:
             --arg tag "$RELEASE_TAG" \
             --arg version "$RELEASE_VERSION" \
             --arg commit "$RELEASE_SHA" \
-            --argjson releaseId "$RELEASE_ID" \
             --argjson artifacts "$artifacts" \
-            '{schemaVersion: 1, repository: $repository, tag: $tag, version: $version, commit: $commit, releaseId: $releaseId, artifacts: $artifacts}' \
+            '{schemaVersion: 1, repository: $repository, tag: $tag, version: $version, commit: $commit, artifacts: $artifacts}' \
             > release-dist/manifest.json
           printf 'path=%s\n' "$artifactory_path" >> "$GITHUB_OUTPUT"
       - name: Authenticate to Artifactory
-        uses: jfrog/setup-jfrog-cli@deda456d982fc5e9a7a020b63eb0d2968aedd33e # v5.1.0
-        env:
-          JF_URL: ${{ env.ARTIFACTORY_URL }}
-        with:
-          disable-auto-build-publish: true
-          disable-auto-evidence-collection: true
-          oidc-provider-name: ${{ vars.ARTIFACTORY_OIDC_PROVIDER }}
+        run: |
+          oidc_token="$(
+            curl --fail-with-body --silent --show-error \
+              -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+              "$ACTIONS_ID_TOKEN_REQUEST_URL" |
+              jq -er '.value | strings | select(length > 0)'
+          )"
+          printf '::add-mask::%s\n' "$oidc_token"
+          exchange_body="$(
+            jq -nc \
+              --arg provider "$ARTIFACTORY_OIDC_PROVIDER" \
+              --arg token "$oidc_token" '
+                {
+                  grant_type:
+                    "urn:ietf:params:oauth:grant-type:token-exchange",
+                  subject_token_type:
+                    "urn:ietf:params:oauth:token-type:id_token",
+                  subject_token: $token,
+                  provider_name: $provider
+                }
+              '
+          )"
+          artifactory_token="$(
+            curl --fail-with-body --silent --show-error \
+              -H 'Content-Type: application/json' \
+              --data "$exchange_body" \
+              "${ARTIFACTORY_URL%/}/access/api/v1/oidc/token" |
+              jq -er '.access_token | strings | select(length > 0)'
+          )"
+          printf '::add-mask::%s\n' "$artifactory_token"
+          printf 'ARTIFACTORY_TOKEN=%s\n' "$artifactory_token" >> "$GITHUB_ENV"
       - name: Upload the immutable bundle to Artifactory
         env:
           ARTIFACTORY_PATH: ${{ steps.bundle.outputs.path }}
@@ -236,20 +242,52 @@ jobs:
           )
           files+=(release-dist/manifest.json)
           [[ "${#files[@]}" -eq 7 ]]
+          auth_header="Authorization: Bearer ${ARTIFACTORY_TOKEN}"
           for file in "${files[@]}"; do
             name="$(basename "$file")"
+            [[ "$name" == "$(basename "$name")" ]]
             digest="$(sha256sum "$file" | cut -d ' ' -f 1)"
-            target="${ARTIFACTORY_REPOSITORY}/${ARTIFACTORY_PATH}/${name}"
-            matches="$(jf rt search "$target" --include-dirs=false --limit=2)"
-            if [[ "$(jq 'length' <<< "$matches")" -eq 1 ]]; then
-              [[ "$(jq -er '.[0].sha256' <<< "$matches")" == "$digest" ]]
-              continue
-            fi
-            [[ "$(jq 'length' <<< "$matches")" -eq 0 ]]
-            jf rt upload "$file" "$target" --fail-no-op=true --flat=true --quiet
-            matches="$(jf rt search "$target" --include-dirs=false --limit=2)"
-            [[ "$(jq -er '.[0].sha256' <<< "$matches")" == "$digest" ]]
+            size="$(stat -c %s "$file")"
+            url="${ARTIFACTORY_URL%/}/artifactory/${ARTIFACTORY_REPOSITORY}/${ARTIFACTORY_PATH}/${name}"
+            remote_file="${RUNNER_TEMP}/artifactory-${name}"
+
+            status="$(
+              curl --silent --show-error --location \
+                --retry 3 --retry-all-errors --connect-timeout 10 \
+                --max-time 900 --proto '=https' --proto-redir '=https' \
+                -H "$auth_header" -o "$remote_file" -w '%{http_code}' "$url"
+            )"
+            case "$status" in
+              200)
+                [[ "$(stat -c %s "$remote_file")" == "$size" ]]
+                [[ "$(
+                  sha256sum "$remote_file" | cut -d ' ' -f 1
+                )" == "$digest" ]]
+                ;;
+              404)
+                curl --fail-with-body --silent --show-error \
+                  --retry 3 --retry-all-errors --connect-timeout 10 \
+                  --max-time 900 --proto '=https' \
+                  -H "$auth_header" -H "X-Checksum-Sha256: ${digest}" \
+                  --upload-file "$file" "$url" > /dev/null
+                ;;
+              *)
+                printf 'Artifactory returned HTTP %s for %s.\n' \
+                  "$status" "$url" >&2
+                exit 1
+                ;;
+            esac
+
+            curl --fail-with-body --silent --show-error --location \
+              --retry 3 --retry-all-errors --connect-timeout 10 \
+              --max-time 900 --proto '=https' --proto-redir '=https' \
+              -H "$auth_header" -o "$remote_file" "$url"
+            [[ "$(stat -c %s "$remote_file")" == "$size" ]]
+            [[ "$(
+              sha256sum "$remote_file" | cut -d ' ' -f 1
+            )" == "$digest" ]]
           done
+
       - name: Register the bundle with nSpect
         env:
           NSPECT_SSA_CLIENT_ID: ${{ secrets.NSPECT_SSA_CLIENT_ID }}

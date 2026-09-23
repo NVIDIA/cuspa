@@ -12,15 +12,74 @@ expected_count="${6:?artifact count is required}"
 manifest="${7:?manifest is required}"
 
 : "${KITMAKER_API_TOKEN:?KITMAKER_API_TOKEN is required}"
+: "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?GitHub OIDC permission is required}"
+: "${ACTIONS_ID_TOKEN_REQUEST_URL:?GitHub OIDC permission is required}"
+: "${RELEASE_SHA:?release SHA is required}"
+: "${RELEASE_TAG:?release tag is required}"
+: "${SOURCE_BASE:?Artifactory source base is required}"
+CHARON_URL="${CHARON_URL:-http://127.0.0.1:8888}"
 [[ "$upload" == true || "$upload" == false ]]
 [[ "$project_id" =~ ^[0-9]+$ ]]
 [[ "$expected_count" =~ ^[0-9]+$ ]]
 [[ -f "$manifest" ]]
 
-portal="https://kitmaker-portal.nvidia.com/api/v0"
+portal="${CHARON_URL%/}/kitmaker-portal/api/v0"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$tmp_dir"' EXIT
 printf '::add-mask::%s\n' "$KITMAKER_API_TOKEN"
+
+charon_token=""
+charon_token_time=0
+portal_http_code=""
+
+refresh_charon_token() {
+  local now
+  local oidc_url
+  local response
+
+  now="$(date +%s)"
+  if [[ -n "$charon_token" ]] && ((now - charon_token_time < 240)); then
+    return
+  fi
+  oidc_url="$ACTIONS_ID_TOKEN_REQUEST_URL"
+  if [[ "$oidc_url" == *\?* ]]; then
+    oidc_url+='&audience=charon.nvidia.com'
+  else
+    oidc_url+='?audience=charon.nvidia.com'
+  fi
+  response="$(
+    curl --fail-with-body --silent --show-error \
+      --connect-timeout 10 --max-time 60 \
+      -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+      "$oidc_url"
+  )" || return
+  charon_token="$(
+    jq -er '.value | strings | select(length > 0)' <<< "$response"
+  )" || return
+  printf '::add-mask::%s\n' "$charon_token" >&2
+  charon_token_time="$now"
+}
+
+portal_request() {
+  local method="$1"
+  local path="$2"
+  local output="$3"
+  local body="${4:-}"
+  local -a args=(
+    --silent --show-error --connect-timeout 10 --max-time 120
+    -X "$method"
+    -H "Authorization: Bearer ${KITMAKER_API_TOKEN}"
+    -o "$output" -w '%{http_code}'
+  )
+
+  portal_http_code=""
+  refresh_charon_token || return
+  args+=(-H "X-Charon-GHA-Token: ${charon_token}")
+  if [[ -n "$body" ]]; then
+    args+=(-H 'Content-Type: application/json' --data "$body")
+  fi
+  portal_http_code="$(curl "${args[@]}" "${portal}/${path}")"
+}
 
 mapfile -t artifacts < <(
   jq -r --arg pattern "$pattern" '
@@ -30,6 +89,18 @@ mapfile -t artifacts < <(
   ' "$manifest"
 )
 [[ "${#artifacts[@]}" -eq "$expected_count" ]]
+repository="$(jq -er '.repository | strings | select(length > 0)' "$manifest")"
+tag="$(jq -er '.tag | strings | select(length > 0)' "$manifest")"
+commit="$(jq -er '.commit | strings | select(length > 0)' "$manifest")"
+[[ "$repository" == NVIDIA/cuspa ]]
+[[ "$tag" == "$RELEASE_TAG" ]]
+[[ "$commit" == "$RELEASE_SHA" ]]
+source_prefix="https://artifactory.nvidia.com/artifactory/sw-cuspa-generic-local/cuspa/nspect/"
+[[ "$SOURCE_BASE" == "${source_prefix}"*"/${tag}/${commit}" ]]
+nspect_id="${SOURCE_BASE#${source_prefix}}"
+nspect_id="${nspect_id%%/*}"
+[[ "$nspect_id" =~ ^NSPECT-[A-Za-z0-9]+-[A-Za-z0-9]+$ ]]
+[[ "$SOURCE_BASE" == "${source_prefix}${nspect_id}/${tag}/${commit}" ]]
 
 fetch_index() {
   local url="$1"
@@ -109,7 +180,7 @@ select_missing() {
   for artifact in "${artifacts[@]}"; do
     IFS=$'\t' read -r name url expected <<< "$artifact"
     [[ "$name" == "$(basename "$url")" ]]
-    [[ "$url" == https://*/artifactory/* ]]
+    [[ "$url" == "${SOURCE_BASE}/${name}" ]]
     [[ "$expected" =~ ^[0-9a-f]{64}$ ]]
     public="$(pypi_digest "$name")"
     devzone="$(devzone_digest "$name")"
@@ -164,14 +235,9 @@ body="$(
 
 response="$tmp_dir/response"
 curl_status=0
-http_code="$(
-  curl --silent --show-error --connect-timeout 10 --max-time 120 \
-    -H "Authorization: Bearer ${KITMAKER_API_TOKEN}" \
-    -H 'Content-Type: application/json' \
-    -o "$response" -w '%{http_code}' \
-    --data "$body" \
-    "${portal}/projects/${project_id}/releases"
-)" || curl_status=$?
+portal_request POST "projects/${project_id}/releases" "$response" "$body" || \
+  curl_status=$?
+http_code="$portal_http_code"
 if [[ "$curl_status" -ne 0 || "$http_code" != 202 ]]; then
   printf 'Kitmaker submission failed (curl %s, HTTP %s).\n' \
     "$curl_status" "$http_code" >&2
@@ -183,12 +249,8 @@ release_uuid="$(jq -er '.release_uuid | strings | select(length > 0)' "$response
 completed=false
 for _ in {1..180}; do
   curl_status=0
-  http_code="$(
-    curl --silent --show-error --connect-timeout 10 --max-time 60 \
-      -H "Authorization: Bearer ${KITMAKER_API_TOKEN}" \
-      -o "$response" -w '%{http_code}' \
-      "${portal}/status/${release_uuid}"
-  )" || curl_status=$?
+  portal_request GET "status/${release_uuid}" "$response" || curl_status=$?
+  http_code="$portal_http_code"
 
   if [[ "$curl_status" -ne 0 || "$http_code" == 429 || "$http_code" =~ ^5[0-9]{2}$ ]]; then
     sleep 30
