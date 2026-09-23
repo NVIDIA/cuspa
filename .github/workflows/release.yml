@@ -171,7 +171,7 @@ jobs:
             for arch in x86_64 aarch64; do
               mapfile -t matches < <(
                 compgen -G \
-                  "release-dist/cuspa_cu${cuda}-${RELEASE_VERSION}-*-${arch}.whl"
+                  "release-dist/cuspa_cu${cuda}-${RELEASE_VERSION}-*_${arch}.whl"
               )
               [[ "${#matches[@]}" -eq 1 ]]
             done
