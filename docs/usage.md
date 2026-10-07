@@ -100,6 +100,8 @@ and synchronize or use the same stream before consuming results elsewhere.
 
 ## Limits
 
-Polygon, ring, spatial-index, and overlap-pair offsets use signed 32-bit
-indices. Spatial indexes and overlap results are checked against the 2^31-1
-limit. Each aggregation batch is limited to 2^31-1 transcripts.
+Polygon, ring, and spatial-index offsets use signed 32-bit indices and are
+checked against the 2^31-1 limit. Point and polygon indices in
+`overlap_pairs` results are `int32`, but the number of pairs uses 64-bit
+offsets and is limited only by device memory (8 bytes per pair). Each
+aggregation batch is limited to 2^31-1 transcripts.

@@ -6,9 +6,7 @@
 #pragma once
 
 #include <cstdint>
-#include <cub/device/device_reduce.cuh>
 #include <cub/device/device_scan.cuh>
-#include <limits>
 
 #include "../common/cuda_utils.cuh"
 #include "../common/geometry.cuh"
@@ -100,7 +98,7 @@ __global__ void overlap_count_kernel(T const* points_xy,
                                      std::int32_t const* ring_offsets,
                                      T const* poly_xy,
                                      int edge_inclusive,
-                                     std::int32_t* out_counts) {
+                                     std::int64_t* out_counts) {
   auto const tid = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (tid >= num_points)
     return;
@@ -157,7 +155,7 @@ __global__ void overlap_emit_kernel(T const* points_xy,
                                     std::int32_t const* ring_offsets,
                                     T const* poly_xy,
                                     int edge_inclusive,
-                                    std::int32_t const* offsets /* [N+1] */,
+                                    std::int64_t const* offsets /* [N+1] */,
                                     std::int32_t* pairs /* [K, 2] flattened */) {
   auto const tid = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
   if (tid >= num_points)
@@ -178,7 +176,7 @@ __global__ void overlap_emit_kernel(T const* points_xy,
   std::int32_t const beg      = grid_offsets[cell_idx];
   std::int32_t const end      = grid_offsets[cell_idx + 1];
 
-  std::int32_t slot = offsets[tid];
+  std::int64_t slot = offsets[tid];
 
   for (std::int32_t i = beg; i < end; ++i) {
     std::int32_t const p = poly_ids[i];
@@ -240,7 +238,7 @@ void run_assign_points(T const* points_xy,
 }
 
 // Counts-and-scans: writes counts[N] via the pass-1 kernel, then runs an
-// exclusive-sum over (N+1) elements yielding offsets[N+1] (offsets[N] = K).
+// exclusive-sum over (N+1) int64 elements yielding offsets[N+1] (offsets[N] = K).
 // Returns K to the host.
 template <typename T>
 std::int64_t run_overlap_count_and_scan(T const* points_xy,
@@ -258,15 +256,18 @@ std::int64_t run_overlap_count_and_scan(T const* points_xy,
                                         std::int32_t const* ring_offsets,
                                         T const* poly_xy,
                                         int edge_inclusive,
-                                        std::int32_t* out_offsets /* [N+1] */,
+                                        std::int64_t* out_offsets /* [N+1] */,
                                         cudaStream_t stream) {
   if (num_points == 0) {
-    CS_CHECK(cudaMemsetAsync(out_offsets, 0, sizeof(std::int32_t), stream));
+    CS_CHECK(cudaMemsetAsync(out_offsets, 0, sizeof(std::int64_t), stream));
     return 0;
   }
   DeviceScratch scratch{stream};
 
-  DeviceBuffer<std::int32_t> d_counts{static_cast<std::size_t>(num_points), stream};
+  // counts[N] = 0 so the exclusive scan over N+1 entries leaves K in offsets[N].
+  // Counts and offsets are int64 so K may exceed 2^31-1.
+  DeviceBuffer<std::int64_t> d_counts{static_cast<std::size_t>(num_points + 1), stream};
+  CS_CHECK(cudaMemsetAsync(d_counts.ptr + num_points, 0, sizeof(std::int64_t), stream));
 
   auto const grid = static_cast<unsigned>((num_points + QUERY_BLOCK - 1) / QUERY_BLOCK);
   overlap_count_kernel<T><<<grid, QUERY_BLOCK, 0, stream>>>(points_xy,
@@ -287,32 +288,17 @@ std::int64_t run_overlap_count_and_scan(T const* points_xy,
                                                             d_counts.ptr);
   CS_CHECK(cudaGetLastError());
 
-  // Accumulate K in int64 and reject values that do not fit int32 outputs.
-  DeviceBuffer<std::int64_t> d_total{1, stream};
-  std::size_t reduce_bytes = 0;
-  CS_CHECK(
-      cub::DeviceReduce::Sum(nullptr, reduce_bytes, d_counts.ptr, d_total.ptr, num_points, stream));
-  scratch.resize(reduce_bytes);
-  CS_CHECK(cub::DeviceReduce::Sum(
-      scratch.ptr, reduce_bytes, d_counts.ptr, d_total.ptr, num_points, stream));
-
-  std::int64_t K_host = 0;
-  CS_CHECK(
-      cudaMemcpyAsync(&K_host, d_total.ptr, sizeof(std::int64_t), cudaMemcpyDeviceToHost, stream));
-  CS_CHECK(cudaStreamSynchronize(stream));
-  if (K_host > std::numeric_limits<std::int32_t>::max()) {
-    throw std::overflow_error("overlap_pairs result exceeds the int32 pair limit");
-  }
-
   std::size_t scan_bytes = 0;
   CS_CHECK(cub::DeviceScan::ExclusiveSum(
-      nullptr, scan_bytes, d_counts.ptr, out_offsets, num_points, stream));
+      nullptr, scan_bytes, d_counts.ptr, out_offsets, num_points + 1, stream));
   scratch.resize(scan_bytes);
   CS_CHECK(cub::DeviceScan::ExclusiveSum(
-      scratch.ptr, scan_bytes, d_counts.ptr, out_offsets, num_points, stream));
-  auto const K_i32 = static_cast<std::int32_t>(K_host);
+      scratch.ptr, scan_bytes, d_counts.ptr, out_offsets, num_points + 1, stream));
+
+  std::int64_t K_host = 0;
   CS_CHECK(cudaMemcpyAsync(
-      out_offsets + num_points, &K_i32, sizeof(std::int32_t), cudaMemcpyHostToDevice, stream));
+      &K_host, out_offsets + num_points, sizeof(std::int64_t), cudaMemcpyDeviceToHost, stream));
+  CS_CHECK(cudaStreamSynchronize(stream));
   return K_host;
 }
 
@@ -332,7 +318,7 @@ void run_overlap_emit(T const* points_xy,
                       std::int32_t const* ring_offsets,
                       T const* poly_xy,
                       int edge_inclusive,
-                      std::int32_t const* offsets,
+                      std::int64_t const* offsets,
                       std::int32_t* pairs_out,
                       cudaStream_t stream) {
   if (num_points == 0)
