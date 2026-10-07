@@ -35,17 +35,21 @@ def _as_2d_xy(points: Any) -> Any:
     raise ValueError(f"expected (N, 2) or (2N,) xy tensor, got shape {shape}")
 
 
-def _empty_int32_like(ref: Any, shape) -> Any:
+def _empty_like(ref: Any, shape, dtype: str) -> Any:
     mod = _array_mod(ref)
     if mod == "cupy":
         import cupy as xp  # type: ignore[import-not-found]
 
-        return xp.empty(shape, dtype=xp.int32)
+        return xp.empty(shape, dtype=getattr(xp, dtype))
     if mod == "torch":
         import torch  # type: ignore[import-not-found]
 
-        return torch.empty(shape, dtype=torch.int32, device=ref.device)
+        return torch.empty(shape, dtype=getattr(torch, dtype), device=ref.device)
     raise TypeError(f"Cannot auto-allocate for array of type {type(ref)!r}")
+
+
+def _empty_int32_like(ref: Any, shape) -> Any:
+    return _empty_like(ref, shape, "int32")
 
 
 def _validate_query_arrays(
@@ -163,7 +167,8 @@ def overlap_pairs(
     Returns
     -------
     int32 tensor of shape ``(K, 2)`` where ``K`` is the total number of
-    containments. Column 0 is point index, column 1 is polygon index. Rows
+    containments. ``K`` may exceed 2^31-1; the output then needs
+    ``8 * K`` bytes of device memory. Column 0 is point index, column 1 is polygon index. Rows
     are ordered by ``point_idx``, then by the polygon's position in the grid
     cell list.
     """
@@ -178,7 +183,8 @@ def overlap_pairs(
     idx = polygons.ensure_index(stream=stream)
     edge_flag = _predicate_flag(predicate)
 
-    offsets = _empty_int32_like(points_xy, n + 1)
+    # int64 offsets let the total pair count exceed 2^31-1.
+    offsets = _empty_like(points_xy, n + 1, "int64")
     K = int(
         _core.overlap_count_and_scan(
             points_xy,
