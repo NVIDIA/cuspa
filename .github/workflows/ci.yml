@@ -160,22 +160,22 @@ jobs:
           - cuda: "12"
             arch: x86_64
             runner: linux-amd64-cpu8
-            image: quay.io/manylinux_cuda/manylinux_2_28_x86_64_cuda12_2@sha256:ebab14ba10620bdb2451ee86c2445f455eee6e6373b31e713b5738e93f3b08b2
+            image: quay.io/manylinux_cuda/manylinux_2_28_x86_64_cuda12_2@sha256:a80719d0a558bb00eaf233d185421018f36ae0fc5b237e1e396e083bb2cc7aa3
             architectures: "75-real;80-real;86-real;89-real;90"
           - cuda: "12"
             arch: aarch64
             runner: linux-arm64-cpu8
-            image: quay.io/manylinux_cuda/manylinux_2_28_aarch64_cuda12_2@sha256:1d1af877622abef8d30b1c0718f36c1afc0299e1e98a114c06e3ff58dab4e222
+            image: quay.io/manylinux_cuda/manylinux_2_28_aarch64_cuda12_2@sha256:5b51b66a2cd313088b05a65c9f6f27bdeda2f59332f6fc18de264c3b640b7824
             architectures: "75-real;80-real;86-real;89-real;90"
           - cuda: "13"
             arch: x86_64
             runner: linux-amd64-cpu8
-            image: quay.io/manylinux_cuda/manylinux_2_28_x86_64_cuda13_0@sha256:f1a3dcd384bd8de50bfbeff92e75bf830ddcfe44897195d1a82c6ac162c8f36d
+            image: quay.io/manylinux_cuda/manylinux_2_28_x86_64_cuda13_0@sha256:bc3cc7aa434157126ad702681fca3231cfffb7aea380ae29a19781a55df3deab
             architectures: "75-real;80-real;86-real;89-real;90-real;100-real;120"
           - cuda: "13"
             arch: aarch64
             runner: linux-arm64-cpu8
-            image: quay.io/manylinux_cuda/manylinux_2_28_aarch64_cuda13_0@sha256:cdff0d2c97f15c17ac94106b292fd785a14fffae112831ecefd961ab2c22c837
+            image: quay.io/manylinux_cuda/manylinux_2_28_aarch64_cuda13_0@sha256:2e5605403176b195ae11488b8252affabcb386f38effeeae7c6fd0bbc0a465ce
             architectures: "75-real;80-real;86-real;89-real;90-real;100-real;120"
     env:
       CIBW_ARCHS_LINUX: ${{ matrix.arch }}
