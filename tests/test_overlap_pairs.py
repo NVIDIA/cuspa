@@ -138,7 +138,28 @@ def test_overlap_pairs_more_than_int32_max_pairs():
     pairs = cs.tl.overlap_pairs(points, polys)
     assert pairs.shape == (expected_k, 2)
     assert pairs.dtype == cp.int32
-    assert bool((cp.bincount(pairs[:, 0], minlength=n_points) == n_polys).all())
+    chunk_size = 2**16
+    for start in range(0, n_points, chunk_size):
+        stop = min(start + chunk_size, n_points)
+        point_ids = pairs[start * n_polys : stop * n_polys, 0].reshape(
+            stop - start, n_polys
+        )
+        expected = cp.arange(start, stop, dtype=cp.int32)[:, None]
+        assert bool((point_ids == expected).all())
     tail = pairs[-n_polys:]
     assert bool((tail[:, 0] == n_points - 1).all())
     assert bool((cp.sort(tail[:, 1]) == cp.arange(n_polys)).all())
+
+
+def test_overlap_pairs_int32_max_input_points():
+    n_points = 2**31 - 1
+    free_bytes, _ = cp.cuda.Device().mem_info
+    # Points, counts, and offsets each need 8 bytes per point.
+    if free_bytes < 24 * n_points + 2**30:
+        pytest.skip("needs ~49 GiB of free device memory")
+
+    polys = _polys_from_squares([_square(0, 0, 1)])
+    points = cp.full((n_points, 2), 100, dtype=cp.float32)
+    points[-1] = 0
+    pairs = cs.tl.overlap_pairs(points, polys)
+    assert cp.asnumpy(pairs).tolist() == [[n_points - 1, 0]]

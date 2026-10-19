@@ -237,8 +237,7 @@ void run_assign_points(T const* points_xy,
   CS_CHECK(cudaGetLastError());
 }
 
-// Counts-and-scans: writes counts[N] via the pass-1 kernel, then runs an
-// exclusive-sum over (N+1) int64 elements yielding offsets[N+1] (offsets[N] = K).
+// Counts-and-scans: writes N counts, then scans into offsets[1:] (offsets[N] = K).
 // Returns K to the host.
 template <typename T>
 std::int64_t run_overlap_count_and_scan(T const* points_xy,
@@ -258,16 +257,13 @@ std::int64_t run_overlap_count_and_scan(T const* points_xy,
                                         int edge_inclusive,
                                         std::int64_t* out_offsets /* [N+1] */,
                                         cudaStream_t stream) {
+  CS_CHECK(cudaMemsetAsync(out_offsets, 0, sizeof(std::int64_t), stream));
   if (num_points == 0) {
-    CS_CHECK(cudaMemsetAsync(out_offsets, 0, sizeof(std::int64_t), stream));
     return 0;
   }
   DeviceScratch scratch{stream};
 
-  // counts[N] = 0 so the exclusive scan over N+1 entries leaves K in offsets[N].
-  // Counts and offsets are int64 so K may exceed 2^31-1.
-  DeviceBuffer<std::int64_t> d_counts{static_cast<std::size_t>(num_points + 1), stream};
-  CS_CHECK(cudaMemsetAsync(d_counts.ptr + num_points, 0, sizeof(std::int64_t), stream));
+  DeviceBuffer<std::int64_t> d_counts{static_cast<std::size_t>(num_points), stream};
 
   auto const grid = static_cast<unsigned>((num_points + QUERY_BLOCK - 1) / QUERY_BLOCK);
   overlap_count_kernel<T><<<grid, QUERY_BLOCK, 0, stream>>>(points_xy,
@@ -289,11 +285,12 @@ std::int64_t run_overlap_count_and_scan(T const* points_xy,
   CS_CHECK(cudaGetLastError());
 
   std::size_t scan_bytes = 0;
-  CS_CHECK(cub::DeviceScan::ExclusiveSum(
-      nullptr, scan_bytes, d_counts.ptr, out_offsets, num_points + 1, stream));
+  // Scan N items so the item count fits int32 even at CUDA 12.2's input limit.
+  CS_CHECK(cub::DeviceScan::InclusiveSum(
+      nullptr, scan_bytes, d_counts.ptr, out_offsets + 1, num_points, stream));
   scratch.resize(scan_bytes);
-  CS_CHECK(cub::DeviceScan::ExclusiveSum(
-      scratch.ptr, scan_bytes, d_counts.ptr, out_offsets, num_points + 1, stream));
+  CS_CHECK(cub::DeviceScan::InclusiveSum(
+      scratch.ptr, scan_bytes, d_counts.ptr, out_offsets + 1, num_points, stream));
 
   std::int64_t K_host = 0;
   CS_CHECK(cudaMemcpyAsync(
