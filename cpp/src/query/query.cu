@@ -171,7 +171,7 @@ std::int64_t overlap_count_and_scan_entry(DeviceArray<Device> points_xy,
                          ring_offsets,
                          poly_points_xy);
   _require_1d(out_offsets, "out_offsets");
-  _require_int32(out_offsets, "out_offsets");
+  _require_int64(out_offsets, "out_offsets");
 
   auto const N = static_cast<std::int64_t>(points_xy.shape(0));
   if (N > std::numeric_limits<std::int32_t>::max())
@@ -184,7 +184,7 @@ std::int64_t overlap_count_and_scan_entry(DeviceArray<Device> points_xy,
   auto const poly_p = static_cast<std::int32_t const*>(poly_ids.data());
   auto const part_p = static_cast<std::int32_t const*>(part_offsets.data());
   auto const ring_p = static_cast<std::int32_t const*>(ring_offsets.data());
-  auto const oo_p   = static_cast<std::int32_t*>(out_offsets.data());
+  auto const oo_p   = static_cast<std::int64_t*>(out_offsets.data());
 
   if (points_xy.dtype() == nb::dtype<float>()) {
     return run_overlap_count_and_scan<float>(static_cast<float const*>(points_xy.data()),
@@ -260,7 +260,7 @@ void overlap_emit_entry(DeviceArray<Device> points_xy,
                          ring_offsets,
                          poly_points_xy);
   _require_1d(offsets, "offsets");
-  _require_int32(offsets, "offsets");
+  _require_int64(offsets, "offsets");
   if (out_pairs.ndim() != 2 || out_pairs.shape(1) != 2)
     throw std::invalid_argument("out_pairs must have shape (K, 2)");
   if (out_pairs.dtype() != nb::dtype<std::int32_t>())
@@ -277,7 +277,7 @@ void overlap_emit_entry(DeviceArray<Device> points_xy,
   auto const poly_p = static_cast<std::int32_t const*>(poly_ids.data());
   auto const part_p = static_cast<std::int32_t const*>(part_offsets.data());
   auto const ring_p = static_cast<std::int32_t const*>(ring_offsets.data());
-  auto const off_p  = static_cast<std::int32_t const*>(offsets.data());
+  auto const off_p  = static_cast<std::int64_t const*>(offsets.data());
   auto const out_p  = static_cast<std::int32_t*>(out_pairs.data());
 
   if (points_xy.dtype() == nb::dtype<float>()) {

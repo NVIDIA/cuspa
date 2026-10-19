@@ -29,6 +29,12 @@ static void _require_int32(DeviceArray<Device> const& a, char const* name) {
 }
 
 template <typename Device>
+static void _require_int64(DeviceArray<Device> const& a, char const* name) {
+  if (a.dtype() != nb::dtype<std::int64_t>())
+    throw std::invalid_argument(std::string{name} + " must be int64");
+}
+
+template <typename Device>
 static void _require_2xy(DeviceArray<Device> const& a, char const* name) {
   if (a.ndim() != 2 || a.shape(1) != 2)
     throw std::invalid_argument(std::string{name} + " must have shape (N, 2)");
