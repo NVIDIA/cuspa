@@ -156,26 +156,29 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # quay.io rebuilds these images and drops the old digests, so a digest
+        # pin soon stops resolving. The image names fix the CUDA toolkit and
+        # manylinux versions.
         include:
           - cuda: "12"
             arch: x86_64
             runner: linux-amd64-cpu8
-            image: quay.io/manylinux_cuda/manylinux_2_28_x86_64_cuda12_2@sha256:a80719d0a558bb00eaf233d185421018f36ae0fc5b237e1e396e083bb2cc7aa3
+            image: quay.io/manylinux_cuda/manylinux_2_28_x86_64_cuda12_2:latest
             architectures: "75-real;80-real;86-real;89-real;90"
           - cuda: "12"
             arch: aarch64
             runner: linux-arm64-cpu8
-            image: quay.io/manylinux_cuda/manylinux_2_28_aarch64_cuda12_2@sha256:5b51b66a2cd313088b05a65c9f6f27bdeda2f59332f6fc18de264c3b640b7824
+            image: quay.io/manylinux_cuda/manylinux_2_28_aarch64_cuda12_2:latest
             architectures: "75-real;80-real;86-real;89-real;90"
           - cuda: "13"
             arch: x86_64
             runner: linux-amd64-cpu8
-            image: quay.io/manylinux_cuda/manylinux_2_28_x86_64_cuda13_0@sha256:bc3cc7aa434157126ad702681fca3231cfffb7aea380ae29a19781a55df3deab
+            image: quay.io/manylinux_cuda/manylinux_2_28_x86_64_cuda13_0:latest
             architectures: "75-real;80-real;86-real;89-real;90-real;100-real;120"
           - cuda: "13"
             arch: aarch64
             runner: linux-arm64-cpu8
-            image: quay.io/manylinux_cuda/manylinux_2_28_aarch64_cuda13_0@sha256:2e5605403176b195ae11488b8252affabcb386f38effeeae7c6fd0bbc0a465ce
+            image: quay.io/manylinux_cuda/manylinux_2_28_aarch64_cuda13_0:latest
             architectures: "75-real;80-real;86-real;89-real;90-real;100-real;120"
     env:
       CIBW_ARCHS_LINUX: ${{ matrix.arch }}

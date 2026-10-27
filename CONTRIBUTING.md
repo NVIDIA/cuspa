@@ -25,10 +25,10 @@ Install the CUDA and compiler requirements described in the
 install cuspa and the contribution tools. Choose one CuPy package:
 
 ```bash
-python -m pip install "cupy-cuda12x[ctk]>=14"  # CUDA 12
-# or: python -m pip install "cupy-cuda13x[ctk]>=14"  # CUDA 13
-python -m pip install -e ".[test]"
-python -m pip install pre-commit build twine
+[uv] pip install "cupy-cuda12x[ctk]>=14"  # CUDA 12
+# or: [uv] pip install "cupy-cuda13x[ctk]>=14"  # CUDA 13
+[uv] pip install -e ".[test]"
+[uv] pip install pre-commit build twine
 pre-commit install
 ```
 
@@ -59,7 +59,7 @@ dependencies are installed.
 For documentation changes, build the documentation and check its links:
 
 ```bash
-python -m pip install -r docs/requirements.txt
+[uv] pip install -r docs/requirements.txt
 sphinx-build -b html -W --keep-going docs docs/_build/html
 sphinx-build -b linkcheck -W --keep-going docs docs/_build/linkcheck
 ```

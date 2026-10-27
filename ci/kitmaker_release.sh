@@ -1,5 +1,22 @@
+#!/usr/bin/env bash
 # SPDX-FileCopyrightText: Copyright (c) 2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
+
+# Publish one project's files from a published GitHub release:
+#
+#   kitmaker_release.sh UPLOAD PROJECT_ID PROJECT_NAME PIC PATTERN COUNT MANIFEST
+#
+# The release service fetches each file from its release-asset URL and
+# publishes it to pypi.org and pypi.nvidia.com. A publication cannot be
+# recalled, so nothing is uploaded until every check has passed: the service's
+# project carries the expected name and owner, each file belongs to it and is
+# attached to the release with the manifest's SHA-256, and a dry run completes.
+# Right before the upload the release must still hold the same assets, by ID as
+# well as digest. Afterwards both indexes must serve each file with that
+# SHA-256. UPLOAD=false stops after the dry run.
+#
+# Requests go through the tunnel at TUNNEL_URL unless KITMAKER_ROUTE=direct,
+# which sends them to KITMAKER_PORTAL_URL. Release assets are read with gh.
 
 set -euo pipefail
 
@@ -12,33 +29,62 @@ expected_count="${6:?artifact count is required}"
 manifest="${7:?manifest is required}"
 
 : "${KITMAKER_API_TOKEN:?KITMAKER_API_TOKEN is required}"
-: "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?GitHub OIDC permission is required}"
-: "${ACTIONS_ID_TOKEN_REQUEST_URL:?GitHub OIDC permission is required}"
 : "${RELEASE_SHA:?release SHA is required}"
 : "${RELEASE_TAG:?release tag is required}"
-: "${SOURCE_BASE:?Artifactory source base is required}"
-CHARON_URL="${CHARON_URL:-http://127.0.0.1:8888}"
+route="${KITMAKER_ROUTE:-tunnel}"
 [[ "$upload" == true || "$upload" == false ]]
 [[ "$project_id" =~ ^[0-9]+$ ]]
 [[ "$expected_count" =~ ^[0-9]+$ ]]
 [[ -f "$manifest" ]]
 
-portal="${CHARON_URL%/}/kitmaker-portal/api/v0"
+case "$route" in
+  tunnel)
+    : "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:?GitHub OIDC permission is required}"
+    : "${ACTIONS_ID_TOKEN_REQUEST_URL:?GitHub OIDC permission is required}"
+    TUNNEL_URL="${TUNNEL_URL:-http://127.0.0.1:8888}"
+    portal="${TUNNEL_URL%/}/kitmaker-portal/api/v0"
+    ;;
+  direct)
+    portal="${KITMAKER_PORTAL_URL:?KITMAKER_PORTAL_URL is required for the direct route}"
+    portal="${portal%/}"
+    ;;
+  *)
+    printf 'KITMAKER_ROUTE must be tunnel or direct, not %s.\n' "$route" >&2
+    exit 2
+    ;;
+esac
+
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf -- "$tmp_dir"' EXIT
-printf '::add-mask::%s\n' "$KITMAKER_API_TOKEN"
+if [[ "${GITHUB_ACTIONS:-}" == true ]]; then
+  printf '::add-mask::%s\n' "$KITMAKER_API_TOKEN"
+fi
 
-charon_token=""
-charon_token_time=0
+# curl reads credentials from private config files so they stay out of argv.
+portal_auth="${tmp_dir}/portal.curlrc"
+tunnel_auth="${tmp_dir}/tunnel.curlrc"
+(umask 077 && printf 'header = "Authorization: Bearer %s"\n' "$KITMAKER_API_TOKEN" > "$portal_auth")
+response="${tmp_dir}/response"
+
+# Service responses can carry internal details, so GitHub Actions logs get only
+# the HTTP status. Local runs print the whole response.
+show_response() {
+  if [[ "${GITHUB_ACTIONS:-}" != true ]]; then
+    cat "$response" >&2
+  fi
+}
+
+tunnel_token_time=0
 portal_http_code=""
 
-refresh_charon_token() {
+refresh_tunnel_token() {
   local now
   local oidc_url
-  local response
+  local token_response
+  local token
 
   now="$(date +%s)"
-  if [[ -n "$charon_token" ]] && ((now - charon_token_time < 240)); then
+  if ((tunnel_token_time > 0 && now - tunnel_token_time < 240)); then
     return
   fi
   oidc_url="$ACTIONS_ID_TOKEN_REQUEST_URL"
@@ -47,34 +93,38 @@ refresh_charon_token() {
   else
     oidc_url+='?audience=charon.nvidia.com'
   fi
-  response="$(
+  token_response="$(
     curl --fail-with-body --silent --show-error \
       --connect-timeout 10 --max-time 60 \
       -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
       "$oidc_url"
   )" || return
-  charon_token="$(
-    jq -er '.value | strings | select(length > 0)' <<< "$response"
+  token="$(
+    jq -er '.value | strings | select(length > 0)' <<< "$token_response"
   )" || return
-  printf '::add-mask::%s\n' "$charon_token" >&2
-  charon_token_time="$now"
+  printf '::add-mask::%s\n' "$token"
+  (umask 077 && printf 'header = "X-Charon-GHA-Token: %s"\n' "$token" > "$tunnel_auth")
+  tunnel_token_time="$now"
 }
 
+# portal_request METHOD PATH [BODY]: the body goes to $response and the HTTP
+# status to $portal_http_code. Never call it inside a command substitution: a
+# tunnel token refresh prints a mask command for the runner.
 portal_request() {
   local method="$1"
   local path="$2"
-  local output="$3"
-  local body="${4:-}"
+  local body="${3:-}"
   local -a args=(
-    --silent --show-error --connect-timeout 10 --max-time 120
-    -X "$method"
-    -H "Authorization: Bearer ${KITMAKER_API_TOKEN}"
-    -o "$output" -w '%{http_code}'
+    --config "$portal_auth" --silent --show-error
+    --connect-timeout 10 --max-time 120
+    -X "$method" -o "$response" -w '%{http_code}'
   )
 
   portal_http_code=""
-  refresh_charon_token || return
-  args+=(-H "X-Charon-GHA-Token: ${charon_token}")
+  if [[ "$route" == tunnel ]]; then
+    refresh_tunnel_token || return
+    args+=(--config "$tunnel_auth")
+  fi
   if [[ -n "$body" ]]; then
     args+=(-H 'Content-Type: application/json' --data "$body")
   fi
@@ -95,12 +145,95 @@ commit="$(jq -er '.commit | strings | select(length > 0)' "$manifest")"
 [[ "$repository" == NVIDIA/cuspa ]]
 [[ "$tag" == "$RELEASE_TAG" ]]
 [[ "$commit" == "$RELEASE_SHA" ]]
-source_prefix="https://artifactory.nvidia.com/artifactory/sw-cuspa-generic-local/cuspa/nspect/"
-[[ "$SOURCE_BASE" == "${source_prefix}"*"/${tag}/${commit}" ]]
-nspect_id="${SOURCE_BASE#${source_prefix}}"
-nspect_id="${nspect_id%%/*}"
-[[ "$nspect_id" =~ ^NSPECT-[A-Za-z0-9]+-[A-Za-z0-9]+$ ]]
-[[ "$SOURCE_BASE" == "${source_prefix}${nspect_id}/${tag}/${commit}" ]]
+version="${tag#v}"
+source_base="https://github.com/${repository}/releases/download/${tag}"
+
+canonical() {
+  sed -E 's/[-_.]+/-/g' <<< "${1,,}"
+}
+
+# Every file must be this project's distribution at the release version.
+for artifact in "${artifacts[@]}"; do
+  IFS=$'\t' read -r name url expected <<< "$artifact"
+  [[ "$name" == "$(basename "$name")" ]]
+  [[ "$url" == "${source_base}/${name}" ]]
+  [[ "$expected" =~ ^[0-9a-f]{64}$ ]]
+  case "$name" in
+    *.whl)
+      distribution="${name%%-*}"
+      file_version="${name#*-}"
+      file_version="${file_version%%-*}"
+      ;;
+    *.tar.gz)
+      distribution="${name%-"${version}".tar.gz}"
+      file_version="$version"
+      [[ "$distribution" != "$name" ]]
+      ;;
+    *)
+      false
+      ;;
+  esac
+  if [[ "$(canonical "$distribution")" != "$(canonical "$project_name")" ]] ||
+    [[ "$file_version" != "$version" ]]; then
+    printf '%s is not a %s %s distribution.\n' "$name" "$project_name" "$version" >&2
+    exit 1
+  fi
+done
+
+# The service's project must be the expected one, owned by the release PIC.
+curl_status=0
+portal_request GET "projects/${project_id}" || curl_status=$?
+if [[ "$curl_status" -ne 0 || "$portal_http_code" != 200 ]]; then
+  printf 'Project lookup failed (curl %s, HTTP %s).\n' \
+    "$curl_status" "$portal_http_code" >&2
+  show_response
+  exit 1
+fi
+if ! jq -e --arg name "$project_name" --arg pic "$pic" '
+  .name == $name and ((.owner_email // "") | ascii_downcase) == ($pic | ascii_downcase)
+' "$response" > /dev/null; then
+  printf 'Project %s is not %s owned by the release PIC.\n' "$project_id" "$project_name" >&2
+  show_response
+  exit 1
+fi
+
+# Pin each file's release asset by ID and digest. Sets $pinned.
+pin_assets() {
+  local release="${tmp_dir}/release.json"
+  local artifact
+  local name
+  local url
+  local expected
+  local asset
+  local id
+  local asset_url
+  local digest
+
+  gh api "repos/${repository}/releases/tags/${tag}" > "$release"
+  jq -e --arg tag "$tag" '.draft == false and .tag_name == $tag' "$release" > /dev/null
+  pinned=""
+  for artifact in "${artifacts[@]}"; do
+    IFS=$'\t' read -r name url expected <<< "$artifact"
+    asset="$(
+      jq -r --arg name "$name" '
+        [.assets[] | select(.name == $name and .state == "uploaded")] |
+        if length == 1 then .[0] | [.id, .browser_download_url, (.digest // "")] | @tsv
+        else empty end
+      ' "$release"
+    )"
+    if [[ -z "$asset" ]]; then
+      printf '%s is not attached to release %s.\n' "$name" "$tag" >&2
+      exit 1
+    fi
+    IFS=$'\t' read -r id asset_url digest <<< "$asset"
+    if [[ "$asset_url" != "$url" || "$digest" != "sha256:${expected}" ]]; then
+      printf 'The attached %s (%s) is not the manifest file.\n' \
+        "$name" "${digest:-no digest}" >&2
+      exit 1
+    fi
+    pinned+="${name} ${id} ${digest}"$'\n'
+  done
+}
 
 fetch_index() {
   local url="$1"
@@ -179,9 +312,6 @@ select_missing() {
 
   for artifact in "${artifacts[@]}"; do
     IFS=$'\t' read -r name url expected <<< "$artifact"
-    [[ "$name" == "$(basename "$url")" ]]
-    [[ "$url" == "${SOURCE_BASE}/${name}" ]]
-    [[ "$expected" =~ ^[0-9a-f]{64}$ ]]
     public="$(pypi_digest "$name")"
     devzone="$(devzone_digest "$name")"
 
@@ -198,91 +328,109 @@ select_missing() {
         missing+=("$url")
         continue
       fi
-      printf 'Partial Kitmaker publication detected for %s.\n' "$name" >&2
+      printf 'Partial publication detected for %s.\n' "$name" >&2
       return 1
     fi
     missing+=("$url")
   done
 }
 
+# submit UPLOAD: submit the missing files; sets $release_uuid.
+submit() {
+  local payload='[]'
+  local body
+  local url
+
+  for url in "${missing[@]}"; do
+    payload="$(
+      jq -c \
+        --arg pic "$pic" \
+        --arg url "$url" \
+        --argjson upload "$1" '
+          . + [{
+            pic: $pic,
+            job_type: "wheel-release-job",
+            url: $url,
+            upload: $upload,
+            mirroring_strategy: "upload-both"
+          }]
+        ' <<< "$payload"
+    )"
+  done
+  body="$(
+    jq -cn --arg project_name "$project_name" --argjson payload "$payload" \
+      '{project_name: $project_name, payload: $payload}'
+  )"
+
+  curl_status=0
+  portal_request POST "projects/${project_id}/releases" "$body" || curl_status=$?
+  if [[ "$curl_status" -ne 0 || "$portal_http_code" != 202 ]]; then
+    printf 'Submission failed (curl %s, HTTP %s).\n' \
+      "$curl_status" "$portal_http_code" >&2
+    show_response
+    exit 1
+  fi
+  release_uuid="$(jq -er '.release_uuid | strings | select(length > 0)' "$response")"
+}
+
+# wait_for_release WHAT: poll $release_uuid until the service finishes it.
+wait_for_release() {
+  local status
+
+  for _ in {1..180}; do
+    curl_status=0
+    portal_request GET "status/${release_uuid}" || curl_status=$?
+    if [[ "$curl_status" -ne 0 || "$portal_http_code" == 429 ||
+      "$portal_http_code" =~ ^5[0-9]{2}$ ]]; then
+      sleep 30
+      continue
+    fi
+    if [[ "$portal_http_code" != 200 ]]; then
+      printf 'Status request failed (HTTP %s).\n' "$portal_http_code" >&2
+      show_response
+      exit 1
+    fi
+
+    status="$(jq -er '.status | strings | select(length > 0)' "$response")"
+    printf '%s %s: %s\n' "$project_name" "$1" "$status"
+    case "${status,,}" in
+      completed | success | succeeded)
+        return 0
+        ;;
+      failed | error | timeout | cancelled | canceled)
+        show_response
+        exit 1
+        ;;
+      *)
+        sleep 30
+        ;;
+    esac
+  done
+  printf '%s %s did not finish: %s\n' "$project_name" "$1" "$release_uuid" >&2
+  exit 1
+}
+
+pin_assets
 select_missing false
 if [[ "${#missing[@]}" -eq 0 ]]; then
   printf '%s is already published on both indexes.\n' "$project_name"
   exit 0
 fi
 
-payload='[]'
-for url in "${missing[@]}"; do
-  payload="$(
-    jq -c \
-      --arg pic "$pic" \
-      --arg url "$url" \
-      --argjson upload "$upload" '
-        . + [{
-          pic: $pic,
-          job_type: "wheel-release-job",
-          url: $url,
-          upload: $upload,
-          mirroring_strategy: "upload-both"
-        }]
-      ' <<< "$payload"
-  )"
-done
-body="$(
-  jq -cn --arg project_name "$project_name" --argjson payload "$payload" \
-    '{project_name: $project_name, payload: $payload}'
-)"
-
-response="$tmp_dir/response"
-curl_status=0
-portal_request POST "projects/${project_id}/releases" "$response" "$body" || \
-  curl_status=$?
-http_code="$portal_http_code"
-if [[ "$curl_status" -ne 0 || "$http_code" != 202 ]]; then
-  printf 'Kitmaker submission failed (curl %s, HTTP %s).\n' \
-    "$curl_status" "$http_code" >&2
-  cat "$response" >&2
-  exit 1
-fi
-release_uuid="$(jq -er '.release_uuid | strings | select(length > 0)' "$response")"
-
-completed=false
-for _ in {1..180}; do
-  curl_status=0
-  portal_request GET "status/${release_uuid}" "$response" || curl_status=$?
-  http_code="$portal_http_code"
-
-  if [[ "$curl_status" -ne 0 || "$http_code" == 429 || "$http_code" =~ ^5[0-9]{2}$ ]]; then
-    sleep 30
-    continue
-  fi
-  if [[ "$http_code" != 200 ]]; then
-    printf 'Kitmaker status failed (HTTP %s).\n' "$http_code" >&2
-    cat "$response" >&2
+submit false
+wait_for_release 'dry run'
+if [[ "$upload" == true ]]; then
+  dry_run_pins="$pinned"
+  pin_assets
+  if [[ "$pinned" != "$dry_run_pins" ]]; then
+    printf 'The release assets changed during the dry run.\n' >&2
     exit 1
   fi
+  submit true
+  wait_for_release publication
 
-  status="$(jq -er '.status | strings | select(length > 0)' "$response")"
-  printf 'Kitmaker %s status: %s\n' "$project_name" "$status"
-  case "$status" in
-    completed)
-      completed=true
-      break
-      ;;
-    failed)
-      cat "$response" >&2
-      exit 1
-      ;;
-    *)
-      sleep 30
-      ;;
-  esac
-done
-[[ "$completed" == true ]]
-
-if [[ "$upload" == true ]]; then
   published=false
-  for _ in {1..24}; do
+  for _ in {1..40}; do
     select_missing true
     if [[ "${#missing[@]}" -eq 0 ]]; then
       published=true
@@ -290,11 +438,14 @@ if [[ "$upload" == true ]]; then
     fi
     sleep 30
   done
-  [[ "$published" == true ]]
+  if [[ "$published" != true ]]; then
+    printf 'Both indexes do not yet serve every %s file.\n' "$project_name" >&2
+    exit 1
+  fi
 fi
 
 if [[ -n "${GITHUB_STEP_SUMMARY:-}" ]]; then
-  printf "Kitmaker \`%s\` completed for \`%s\` (%s).\n" \
+  printf "Release \`%s\` completed for \`%s\` (%s).\n" \
     "$release_uuid" "$project_name" \
     "$(if [[ "$upload" == true ]]; then printf published; else printf validated; fi)" \
     >> "$GITHUB_STEP_SUMMARY"

@@ -101,14 +101,9 @@ jobs:
       - packages
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    # Supplies NSPECT_ID for the staging path; this job uses no secrets.
-    environment: release-staging
     permissions:
       contents: read
     env:
-      ARTIFACTORY_REPOSITORY: ${{ vars.ARTIFACTORY_REPOSITORY }}
-      ARTIFACTORY_URL: ${{ vars.ARTIFACTORY_URL }}
-      NSPECT_ID: ${{ vars.NSPECT_ID }}
       RELEASE_SHA: ${{ needs.validate.outputs.sha }}
       RELEASE_TAG: ${{ needs.validate.outputs.tag }}
       RELEASE_VERSION: ${{ needs.validate.outputs.version }}
@@ -131,10 +126,6 @@ jobs:
           version: "0.9.25"
       - name: Validate and describe the release bundle
         run: |
-          [[ "$ARTIFACTORY_REPOSITORY" == sw-cuspa-generic-local ]]
-          [[ "${ARTIFACTORY_URL%/}" == https://artifactory.nvidia.com ]]
-          [[ "$NSPECT_ID" =~ ^NSPECT-[A-Za-z0-9]+-[A-Za-z0-9]+$ ]]
-
           mapfile -t wheels < <(compgen -G 'release-dist/*.whl')
           mapfile -t sdists < <(compgen -G 'release-dist/*.tar.gz')
           [[ "${#wheels[@]}" -eq 4 ]]
@@ -155,9 +146,8 @@ jobs:
             uvx --from abi3audit==0.0.26 abi3audit --strict "$wheel"
           done
 
-          # ci/stage_release.sh uploads the bundle to these Artifactory paths.
-          artifactory_path="cuspa/nspect/${NSPECT_ID}/${RELEASE_TAG}/${RELEASE_SHA}"
-          artifactory_base="${ARTIFACTORY_URL%/}"
+          # The release service fetches the packages from the published release.
+          source_base="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
 
           mapfile -t packages < <(
             find release-dist -maxdepth 1 -type f \
@@ -169,7 +159,7 @@ jobs:
             name="$(basename "$package")"
             digest="$(sha256sum "$package" | cut -d ' ' -f 1)"
             size="$(stat -c %s "$package")"
-            source_pointer="${artifactory_base}/artifactory/${ARTIFACTORY_REPOSITORY}/${artifactory_path}/${name}"
+            source_pointer="${source_base}/${name}"
             printf '%s  %s\n' "$digest" "$name" >> release-dist/SHA256SUMS
             artifacts="$(
               jq -c \
@@ -198,10 +188,96 @@ jobs:
           path: release-dist
           if-no-files-found: error
           retention-days: 90
-      - name: Describe the next step
+
+  draft:
+    name: Release / Draft
+    needs:
+      - validate
+      - bundle
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_PRERELEASE: ${{ needs.validate.outputs.prerelease }}
+      RELEASE_SHA: ${{ needs.validate.outputs.sha }}
+      RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+    steps:
+      - name: Download the release bundle
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: cuspa-release-${{ needs.validate.outputs.tag }}
+          path: release-dist
+      - name: Create the draft release
         run: |
+          mapfile -t files < <(find release-dist -maxdepth 1 -type f -print | sort)
+          [[ "${#files[@]}" -eq 7 ]]
+          [[ "$(gh api "repos/${GH_REPO}/commits/${RELEASE_TAG}" --jq .sha)" == "$RELEASE_SHA" ]]
+
+          # The by-tag lookup skips drafts, so search the full release list.
+          list_releases() {
+            local releases
+            releases="$(
+              gh api --paginate "repos/${GH_REPO}/releases?per_page=100" \
+                --jq ".[] | select(.tag_name == \"${RELEASE_TAG}\") | [.id, .draft] | @tsv"
+            )"
+            listed=()
+            if [[ -n "$releases" ]]; then
+              mapfile -t listed <<< "$releases"
+            fi
+          }
+
+          # A published release is immutable. A draft is replaced so that it
+          # always holds this run's packages.
+          list_releases
+          for release in "${listed[@]}"; do
+            IFS=$'\t' read -r id draft <<< "$release"
+            if [[ "$draft" != true ]]; then
+              printf 'Release %s is already published.\n' "$RELEASE_TAG" >&2
+              exit 1
+            fi
+            gh api --method DELETE "repos/${GH_REPO}/releases/${id}"
+          done
+
+          prerelease=false
+          prerelease_arg=()
+          if [[ "$RELEASE_PRERELEASE" == true ]]; then
+            prerelease=true
+            prerelease_arg=(--prerelease)
+          fi
+          gh release create "$RELEASE_TAG" "${files[@]}" \
+            --draft --verify-tag --title "$RELEASE_TAG" --generate-notes \
+            "${prerelease_arg[@]}" > /dev/null
+
+          for _ in {1..10}; do
+            list_releases
+            if [[ "${#listed[@]}" -gt 0 ]]; then
+              break
+            fi
+            sleep 3
+          done
+          [[ "${#listed[@]}" -eq 1 ]]
+          IFS=$'\t' read -r id draft <<< "${listed[0]}"
+          [[ "$draft" == true ]]
+          release_json="$(gh api "repos/${GH_REPO}/releases/${id}")"
+          jq -e --arg tag "$RELEASE_TAG" --argjson prerelease "$prerelease" '
+            .draft == true and .tag_name == $tag and .prerelease == $prerelease and
+            (.assets | length) == 7 and
+            ([.assets[].state] | all(. == "uploaded"))
+          ' <<< "$release_json" > /dev/null
+          for file in "${files[@]}"; do
+            name="$(basename "$file")"
+            digest="sha256:$(sha256sum "$file" | cut -d ' ' -f 1)"
+            jq -e --arg name "$name" --arg digest "$digest" \
+              '[.assets[] | select(.name == $name and .digest == $digest)] | length == 1' \
+              <<< "$release_json" > /dev/null
+          done
+
           {
-            printf '### Release bundle ready\n\n'
-            printf 'On the NVIDIA network, stage it in Artifactory and register it with nSpect:\n\n'
-            printf '    ci/stage_release.sh stage %s\n' "$RELEASE_TAG"
+            printf '### Draft release ready\n\n'
+            printf 'Review the notes of [%s](%s), then publish it. ' \
+              "$RELEASE_TAG" "$(jq -r .html_url <<< "$release_json")"
+            printf 'Publishing makes the release immutable and starts Publish Release.\n'
           } >> "$GITHUB_STEP_SUMMARY"

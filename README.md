@@ -9,39 +9,32 @@ GPU computation.
 
 ## Installation
 
+Install the prebuilt wheel for your CUDA major version:
+
+```bash
+[uv] pip install cuspa-cu12  # CUDA 12
+[uv] pip install cuspa-cu13  # CUDA 13
+```
+
+Both distributions provide the `cuspa` Python package; install only one per
+environment. The optional adapters are extras, for example
+`[uv] pip install "cuspa-cu12[geopandas]"`; `geoarrow` and `spatialdata` work
+the same way.
+
 cuspa requires Python 3.12 or newer, a compatible NVIDIA GPU and driver, a CUDA
-12 or CUDA 13 runtime, and CuPy or CUDA-enabled PyTorch. Aggregation and I/O
-adapters currently require CuPy. Source builds also require the matching CUDA
-toolkit and a C++17 compiler.
+12 or CUDA 13 runtime, and CuPy or CUDA-enabled PyTorch. Install the CuPy or
+PyTorch package for your CUDA environment separately. Aggregation and I/O
+adapters currently require CuPy.
 
-Install from source with:
-
-```bash
-python -m pip install .
-```
-
-When published to PyPI, wheels will use separate distribution names for CUDA 12
-and CUDA 13:
+To build from source instead, install the `cuspa` source distribution. This
+requires the matching CUDA toolkit and a C++17 compiler:
 
 ```bash
-python -m pip install cuspa-cu12  # CUDA 12
-python -m pip install cuspa-cu13  # CUDA 13
+[uv] pip install cuspa
 ```
 
-Both distributions provide the `cuspa` Python package; they must not be
-installed together in one environment.
-
-Install the CuPy or PyTorch package for your CUDA environment separately. From
-a source checkout, install optional adapters with:
-
-```bash
-python -m pip install ".[geoarrow]"
-python -m pip install ".[geopandas]"
-python -m pip install ".[spatialdata]"
-```
-
-See the [installation guide](docs/install.md) for source-build and wheel
-details.
+See the [installation guide](https://nvidia.github.io/cuspa/install.html) for
+wheel targets and source-build details.
 
 ## Usage
 
@@ -60,8 +53,8 @@ csr = cs.tl.aggregate_to_cells(
 
 ## Documentation
 
-See the [documentation](docs/index.md) for installation, usage, geometry input,
-and the API reference.
+See the [documentation](https://nvidia.github.io/cuspa/) for installation,
+usage, geometry input, and the API reference.
 
 ## Contributing
 
