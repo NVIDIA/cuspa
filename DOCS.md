@@ -1,15 +1,42 @@
 # Documentation site
 
 The cuspa documentation is published with GitHub Pages at
-https://nvidia.github.io/cuspa/. Sphinx builds it from `docs/`, and the site
-shows the documentation on `main`.
+https://nvidia.github.io/cuspa/. Sphinx builds it from `docs/`.
+
+## Versions
+
+The site holds one copy of the documentation per version:
+
+- `latest/` is the documentation on `main`.
+- `<version>/`, for example `0.1.0/`, is the documentation of a published
+  GitHub release, built from its tag. Every final release has one. A release
+  candidate has one while it is newer than the newest final release. Draft
+  releases have none.
+- `stable/` is the newest final release.
+
+The site root redirects to `stable/`, or to `latest/` until the first final
+release. So do the top-level addresses the site used before it had versions,
+such as `install.html`. The version switcher in the header reads the list of
+versions from `switcher.json` at the site root. Pages of other versions than
+`stable/` show a banner that links to it.
 
 ## How the site is published
 
 The **Docs** workflow (`.github/workflows/docs.yml`) runs on every push to
-`main` and can also be started by hand. It builds the HTML with Sphinx on a
-GitHub-hosted runner and deploys it with GitHub's Pages actions. Sphinx runs
-with `-W`, so a warning fails the build and the published site stays as it was.
+`main`, when a release is published, and when started by hand. On a
+GitHub-hosted runner, `ci/build_docs_site.py` builds `latest/` from `main` and
+rebuilds every published release from its tag. GitHub's Pages actions then
+deploy the site.
+
+Sphinx builds `latest/` with `-W`, so a warning fails the build and the
+published site stays as it was. Releases build without `-W`, so a new warning
+in an old release cannot block the site. Each release build installs the
+documentation dependencies as they were on its tagged commit (uv's
+`--exclude-newer`), so new versions of Sphinx or the theme cannot break it.
+
+Publishing a release starts **Publish Release**, and its start triggers
+**Docs** through `workflow_run`. That run uses `main`, which the
+`github-pages` environment accepts.
 
 CI also builds the documentation and checks its links on every pull request in
 the **Docs / Sphinx** job, so most problems show up before merge.
@@ -21,6 +48,13 @@ generates the pages into `docs/api/generated/`, which is not committed, from
 the lists in `docs/api/containers.md`, `docs/api/tl.md`, and `docs/api/io.md`.
 When you add a public function or class, add it to the matching list. The
 template for class pages is `docs/_templates/autosummary/class.rst`.
+
+## Release notes
+
+The release notes live in `docs/release-notes/`, one file per version.
+`docs/release-notes/index.md` includes them, newest first. See
+[CONTRIBUTING.md](CONTRIBUTING.md#release-notes) for adding an entry and
+[RELEASE.md](RELEASE.md#before-releasing) for finishing the notes of a release.
 
 ## Turning on GitHub Pages
 
@@ -60,6 +94,17 @@ python -m http.server --directory docs/_build/html 8000
 
 Open http://localhost:8000 in a browser.
 
+To build the whole site, list the release tags to include. This needs
+[uv](https://docs.astral.sh/uv/) and the tags in your clone:
+
+```bash
+python ci/build_docs_site.py docs/_build/site v0.1.0
+python -m http.server --directory docs/_build/site 8000
+```
+
+The version switcher reads `switcher.json` from the published site, so a local
+preview lists the published versions.
+
 ## Troubleshooting
 
 - **The deploy job fails with "Get Pages site failed" or "Not Found".** Pages
@@ -72,3 +117,6 @@ Open http://localhost:8000 in a browser.
   reproduce it locally with the commands above.
 - **The site still shows old content.** A deployment can take a minute or two
   to appear after the workflow finishes.
+- **A release is missing from the version switcher.** Check that the release
+  is published and not a draft, and that a release candidate is newer than
+  the newest final release. Then start the workflow by hand.

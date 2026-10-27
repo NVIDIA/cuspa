@@ -64,13 +64,28 @@ sphinx-build -b html -W --keep-going docs docs/_build/html
 sphinx-build -b linkcheck -W --keep-going docs docs/_build/linkcheck
 ```
 
+## Release notes
+
+Describe every user-facing change in the release notes of the next version,
+`docs/release-notes/<version>.md`, under Features, Performance, Bug fixes,
+Misc, or Removals. Link the pull request and credit its authors:
+
+```markdown
+* {func}`~cuspa.tl.assign_points` accepts ... {pr}`123` {smaller}`A Author`
+```
+
+If the next version has no notes yet, copy `docs/release-notes/blank.md` to
+`docs/release-notes/<version>.md`, set the version in its heading, and include
+the file at the top of `docs/release-notes/index.md`.
+
 ## Pull request process
 
 1. Fork the repository and create a topic branch from `main`.
 2. Write commit messages that explain what changed and why.
 3. Sign off every commit as described below.
 4. Run the applicable tests and checks.
-5. Open a pull request targeting `main`. Explain the purpose of the change and
+5. Add the change to the release notes.
+6. Open a pull request targeting `main`. Explain the purpose of the change and
    link the related issue when applicable.
 
 cuspa maintainers review pull requests and may request changes. A maintainer
