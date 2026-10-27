@@ -26,6 +26,7 @@ extensions = [
     "myst_parser",
     "sphinx_design",
     "sphinx.ext.autodoc",
+    "sphinx.ext.autosummary",
     "sphinx.ext.intersphinx",
     "numpydoc",
     "sphinx_copybutton",
@@ -36,6 +37,7 @@ source_suffix = {
 }
 master_doc = "index"
 autodoc_member_order = "bysource"
+autosummary_generate = True
 autodoc_mock_imports = ["cuspa._core", "cupy", "torch"]
 default_role = "literal"
 numpydoc_show_class_members = False

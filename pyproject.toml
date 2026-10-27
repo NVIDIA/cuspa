@@ -49,6 +49,7 @@ test = ["pytest>=8", "pytest-timeout>=2.3", "scipy>=1.13"]
 
 [project.urls]
 Homepage = "https://github.com/NVIDIA/cuspa"
+Documentation = "https://nvidia.github.io/cuspa/"
 Issues = "https://github.com/NVIDIA/cuspa/issues"
 Repository = "https://github.com/NVIDIA/cuspa"
 

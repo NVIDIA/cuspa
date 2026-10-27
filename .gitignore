@@ -126,3 +126,4 @@ _version_helper.py
 
 # Editable installs
 *.egg-link
+docs/api/generated/
