@@ -11,7 +11,7 @@ buffers.
 :link: install
 :link-type: doc
 
-Install from source. When wheels are published, select one for your CUDA runtime.
+Install the wheel for your CUDA runtime, or build from source.
 :::
 
 :::{grid-item-card} {fas}`play;sd-text-primary` Usage
@@ -45,4 +45,5 @@ install
 usage
 geoarrow
 api/index
+release-notes/index
 ```

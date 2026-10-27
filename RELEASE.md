@@ -9,6 +9,10 @@ the files that CI built and that passed the security checks.
 ## Before releasing
 
 - The wheel builds and the other required checks pass on `main`.
+- The release notes in `docs/release-notes/<version>.md` are complete, and
+  sections without entries are removed. For a final release, replace
+  `the-future` in the heading with the release date, for example
+  ``### 0.1.0 {small}`2026-11-03` ``. A release candidate keeps `the-future`.
 - Immutable releases are enabled in the repository settings.
 - The `publish` environment requires a maintainer's approval. It and the
   `release-staging` environment hold the release service credentials.
@@ -32,7 +36,8 @@ the files that CI built and that passed the security checks.
 3. **Publish the draft.** Review the release notes, then publish the draft.
    Publishing makes the release immutable and starts **Publish Release**, which
    checks the release against the Prepare Release build and runs a dry run of
-   the upload for each project.
+   the upload for each project. It also starts **Docs**, which adds the
+   release to the documentation site; see [DOCS.md](DOCS.md#versions).
 4. **Run the security checks.** With NVIDIA's internal release tooling, register
    the published files for scanning, wait for the scans to finish, and run the
    release readiness check. A pass sets the `release/review` commit status for
