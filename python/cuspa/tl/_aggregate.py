@@ -19,17 +19,21 @@ if TYPE_CHECKING:
     from collections.abc import Iterable
 
 
-# Float32 represents every integer below this threshold exactly. We keep a
-# strict boundary so an increment at the limit can never be silently rounded.
-_FLOAT32_COUNT_LIMIT = 2**24
+# Largest non-zero count that int32 indptr and indices can address. Beyond
+# it, aggregate_to_cells switches both to int64, as scipy does.
+_INT32_MAX = 2**31 - 1
 
 
 @dataclass(slots=True)
 class CSRMatrix:
-    """CSR matrix backed by CuPy, CUDA PyTorch, or NumPy arrays."""
+    """CSR matrix backed by CuPy, CUDA PyTorch, or NumPy arrays.
 
-    indptr: Any  # int32[num_cells + 1]
-    indices: Any  # int32[K]  gene ids in CSR column order
+    ``indptr`` and ``indices`` share one dtype: ``int32``, or ``int64`` when the
+    matrix has more than ``2**31 - 1`` non-zeros. ``data`` is always ``int32``.
+    """
+
+    indptr: Any  # int32 or int64 [num_cells + 1]
+    indices: Any  # same dtype as indptr [K]  gene ids in CSR column order
     data: Any  # int32[K]  counts
     shape: tuple[int, int]
 
@@ -42,8 +46,18 @@ class CSRMatrix:
 
         ``cupyx.scipy.sparse`` only supports float and complex data. Counts are
         cast to ``dtype``, which defaults to ``float32``.
+
+        ``cupyx.scipy.sparse`` also only supports ``int32`` indices, so this
+        raises ``OverflowError`` for a matrix with more than ``2**31 - 1``
+        non-zeros. Use :meth:`to_torch_sparse` or the arrays directly instead.
         """
         import cupy as cp  # type: ignore[import-not-found]
+
+        if self.nnz > _INT32_MAX:
+            raise OverflowError(
+                f"cupyx.scipy.sparse supports at most {_INT32_MAX:,} non-zeros, "
+                f"but this matrix has {self.nnz:,}"
+            )
         from cupyx.scipy.sparse import csr_matrix  # type: ignore[import-not-found]
 
         def as_cupy(a: Any) -> Any:
@@ -53,6 +67,7 @@ class CSRMatrix:
                 return cp.from_dlpack(a)
             return cp.asarray(a)
 
+        # cupyx casts int64 indices to int32; the check above makes that safe.
         data = as_cupy(self.data).astype(dtype, copy=False)
         return csr_matrix(
             (data, as_cupy(self.indices), as_cupy(self.indptr)), shape=self.shape
@@ -196,6 +211,8 @@ def aggregate_to_cells(
     Each batch is a ``(points, gene_ids)`` pair of CuPy arrays. Batches are
     consumed one at a time; this function does not read files or choose a batch
     size. The returned CSR has sorted, duplicate-free ``int32`` data.
+    ``indptr`` and ``indices`` are ``int32``, or ``int64`` once the result has
+    more than ``2**31 - 1`` non-zeros.
 
     Parameters
     ----------
@@ -212,27 +229,31 @@ def aggregate_to_cells(
     stream
         CUDA stream handle for native kernels. ``0`` means the default stream.
         The corresponding CuPy stream must also be current because buffer
-        copies and sparse merging use CuPy's current stream.
+        copies and merge buffers use CuPy's current stream.
 
     Returns
     -------
     CSRMatrix
         Sparse count matrix across all batches, stored on the GPU.
 
+    Raises
+    ------
+    OverflowError
+        If a ``(cell, gene)`` count exceeds ``2**31 - 1``, the limit of the
+        ``int32`` ``data`` array.
+
     Notes
     -----
-    Batch merging uses ``float32`` sparse matrices. Counts for a
-    ``(cell, gene)`` pair must be below ``2**24``.
+    Batches are merged with exact integer arithmetic, so counts are never
+    rounded.
     """
-    import cupy as cp  # type: ignore[import-not-found]
-
     iterator = iter(batches)
     try:
         points, gene_ids = next(iterator)
     except StopIteration as exc:
         raise ValueError("batches must contain at least one transcript batch") from exc
 
-    first = _aggregate_one_batch(
+    accumulator = _aggregate_one_batch(
         points,
         gene_ids,
         polygons,
@@ -240,10 +261,8 @@ def aggregate_to_cells(
         num_cells=num_cells,
         stream=stream,
     )
-    if _array_mod(first.data) != "cupy":
+    if _array_mod(accumulator.data) != "cupy":
         raise TypeError("aggregate_to_cells currently requires CuPy batches")
-    accumulator = first.to_cupy_csr(dtype="float32")
-    del first
 
     for points, gene_ids in iterator:
         partial = _aggregate_one_batch(
@@ -256,23 +275,60 @@ def aggregate_to_cells(
         )
         if _array_mod(partial.data) != "cupy":
             raise TypeError("all aggregate_to_cells batches must be CuPy arrays")
-        updated = accumulator + partial.to_cupy_csr(dtype="float32")
+        updated = _merge_csr(accumulator, partial, stream=stream)
         del accumulator, partial
         accumulator = updated
 
-    # Sparse addition can leave duplicate entries and non-canonical ordering.
-    # Do this once, after the final batch, rather than for every addition.
-    accumulator.sum_duplicates()
-    accumulator.sort_indices()
-    if accumulator.nnz and int(accumulator.data.max()) >= _FLOAT32_COUNT_LIMIT:
-        raise OverflowError(
-            "float32 batch accumulation requires every (cell, gene) count "
-            f"to be below {_FLOAT32_COUNT_LIMIT:,}"
-        )
+    return accumulator
 
-    return CSRMatrix(
-        indptr=accumulator.indptr.astype(cp.int32, copy=False),
-        indices=accumulator.indices.astype(cp.int32, copy=False),
-        data=accumulator.data.astype(cp.int32),
-        shape=accumulator.shape,
+
+def _index_dtype(nnz: int, current: Any) -> Any:
+    """Index dtype for a merged CSR: int32 while it fits, int64 after."""
+    import cupy as cp  # type: ignore[import-not-found]
+
+    if current == cp.int64 or nnz > _INT32_MAX:
+        return cp.int64
+    return cp.int32
+
+
+def _merge_csr(a: CSRMatrix, b: CSRMatrix, *, stream: int = 0) -> CSRMatrix:
+    """Return the exact sum of two canonical CuPy CSR matrices.
+
+    ``a`` is the accumulator, with ``int32`` or ``int64`` indices; ``b`` is a
+    batch, with ``int32`` indices. Both must have sorted, duplicate-free indices
+    and non-negative ``int32`` counts. The result has the same form, with
+    ``int64`` indices once it has more than ``2**31 - 1`` non-zeros. Raises
+    ``OverflowError`` if a count exceeds ``2**31 - 1``.
+    """
+    import cupy as cp  # type: ignore[import-not-found]
+
+    if a.shape != b.shape:
+        raise ValueError(f"cannot merge CSR shapes {a.shape} and {b.shape}")
+
+    # One bit per B entry plus one popcount per 32 entries; see the kernels.
+    num_words = (b.nnz + 31) // 32
+    rank_scratch = cp.empty(2 * num_words + 1, dtype=cp.int32)
+    nnz = int(
+        _core.merge_csr_count(
+            a.indptr, a.indices, b.indptr, b.indices, rank_scratch, stream
+        )
     )
+    index_dtype = _index_dtype(nnz, a.indptr.dtype)
+
+    indptr = cp.empty(a.shape[0] + 1, dtype=index_dtype)
+    indices = cp.empty(nnz, dtype=index_dtype)
+    data = cp.empty(nnz, dtype=cp.int32)
+    _core.merge_csr_fill(
+        a.indptr,
+        a.indices,
+        a.data,
+        b.indptr,
+        b.indices,
+        b.data,
+        rank_scratch,
+        indptr,
+        indices,
+        data,
+        stream,
+    )
+    return CSRMatrix(indptr=indptr, indices=indices, data=data, shape=a.shape)
