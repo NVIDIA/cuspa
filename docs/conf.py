@@ -7,6 +7,9 @@ import subprocess
 import sys
 from pathlib import Path
 
+from docutils.parsers.rst import roles
+from packaging.version import Version
+
 HERE = Path(__file__).parent
 sys.path.insert(0, str(HERE.parent / "python"))
 
@@ -21,12 +24,19 @@ release = subprocess.run(
     text=True,
 ).stdout.strip()
 version = release
+# The site serves `main` as `latest` and each release under its version.
+_version = Version(release)
+if _version.is_devrelease or _version.local:
+    docs_version = "latest"
+else:
+    docs_version = _version.public
 
 extensions = [
     "myst_parser",
     "sphinx_design",
     "sphinx.ext.autodoc",
     "sphinx.ext.autosummary",
+    "sphinx.ext.extlinks",
     "sphinx.ext.intersphinx",
     "numpydoc",
     "sphinx_copybutton",
@@ -50,8 +60,20 @@ intersphinx_mapping = {
     "torch": ("https://pytorch.org/docs/stable/", None),
 }
 
+extlinks = {
+    "issue": ("https://github.com/NVIDIA/cuspa/issues/%s", "issue%s"),
+    "pr": ("https://github.com/NVIDIA/cuspa/pull/%s", "pr%s"),
+}
+
 templates_path = ["_templates"]
-exclude_patterns = ["_build", "Thumbs.db", ".DS_Store"]
+exclude_patterns = [
+    "_build",
+    "Thumbs.db",
+    ".DS_Store",
+    # release-notes/index.md includes the notes of each version.
+    "release-notes/[0-9]*.md",
+    "release-notes/blank.md",
+]
 
 html_theme = "nvidia_sphinx_theme"
 html_theme_options = {
@@ -67,8 +89,24 @@ html_theme_options = {
     # Disable external integrations while the documentation is private.
     "public_docs_features": False,
     "show_toc_level": 2,
+    "switcher": {
+        "json_url": "https://nvidia.github.io/cuspa/switcher.json",
+        "version_match": docs_version,
+    },
+    # The Docs workflow writes switcher.json when it deploys the site.
+    "check_switcher": False,
+    "show_version_warning_banner": True,
 }
+html_static_path = ["_static"]
+html_css_files = ["css/override.css"]
 html_copy_source = False
 html_show_sourcelink = False
 html_show_sphinx = False
 html_title = "cuspa"
+
+
+def setup(app):
+    # Release dates and authors in the release notes.
+    for name in ("small", "smaller"):
+        role = roles.CustomRole(name, roles.generic_custom_role, {"classes": [name]})
+        app.add_role(name, role)

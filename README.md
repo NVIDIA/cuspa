@@ -54,7 +54,10 @@ csr = cs.tl.aggregate_to_cells(
 ## Documentation
 
 See the [documentation](https://nvidia.github.io/cuspa/) for installation,
-usage, geometry input, and the API reference.
+usage, geometry input, the API reference, and the
+[release notes](https://nvidia.github.io/cuspa/latest/release-notes/index.html).
+The site has documentation for `main` and for each release; pick one in the
+version switcher.
 
 ## Contributing
 
