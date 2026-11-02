@@ -59,14 +59,18 @@ Its `shape` field is a Python tuple.
 Use `csr.to_cupy_csr()` or `csr.to_torch_sparse()` to create a framework-native
 sparse matrix without copying through host memory.
 
-Batch aggregation uses `float32` sparse accumulation. Counts for a
-`(cell, gene)` pair must be below `2**24` (16,777,216).
+Batches are merged with exact integer arithmetic. Counts are `int32`, so each
+`(cell, gene)` count must be at most `2**31 - 1`; `aggregate_to_cells` raises
+`OverflowError` otherwise. `indptr` and `indices` are `int32` until the result
+has more than `2**31 - 1` non-zeros, and `int64` after that. `cupyx.scipy.sparse`
+only supports `int32` indices, so `to_cupy_csr()` raises `OverflowError` for
+such a matrix; `to_torch_sparse()` and the raw arrays still work.
 
 ### Choosing a batch size
 
 GPU memory must hold the largest input batch, its aggregation workspace, the
-polygon index, the accumulated CSR, and sparse-merge temporaries. Batching
-limits input memory; the final CSR must still fit on the GPU.
+polygon index, the accumulated CSR, and the merged CSR while a batch is added.
+Batching limits input memory; the final CSR must still fit on the GPU.
 
 ## SpatialData adapter
 
@@ -95,7 +99,7 @@ place, call `polygons.clear_cache()` before the next query.
 The optional `stream=` argument is a raw CUDA stream handle used by the native
 kernels. Operations may synchronize it while sizing indexes or results. For
 `aggregate_to_cells`, also make the corresponding CuPy stream current because
-buffer copies and sparse merging use CuPy's current stream. Keep inputs alive
+buffer copies and merge buffers use CuPy's current stream. Keep inputs alive
 and synchronize or use the same stream before consuming results elsewhere.
 
 ## Limits
@@ -104,4 +108,7 @@ Polygon, ring, and spatial-index offsets use signed 32-bit indices and are
 checked against the 2^31-1 limit. Point and polygon indices in
 `overlap_pairs` results are `int32`, but the number of pairs uses 64-bit
 offsets and is limited only by device memory (8 bytes per pair). Each
-aggregation batch is limited to 2^31-1 transcripts.
+aggregation batch is limited to 2^31-1 transcripts. The aggregated CSR
+switches to `int64` `indptr` and `indices` past 2^31-1 non-zero
+`(cell, gene)` pairs, so its size is limited only by device memory. Each count
+is `int32` and limited to 2^31-1; larger counts raise `OverflowError`.

@@ -9,6 +9,8 @@ cp = pytest.importorskip("cupy")
 import numpy as np
 
 import cuspa as cs
+from cuspa.tl import _aggregate as aggregate_mod
+from cuspa.tl._aggregate import CSRMatrix, _merge_csr
 
 
 def _square(cx: float, cy: float, r: float, dtype=cp.float32):
@@ -128,6 +130,186 @@ def test_aggregate_matches_scipy_reference():
     ref_dense = ref.toarray()
 
     assert np.array_equal(gpu_dense, ref_dense)
+
+
+def _csr(indptr, indices, data, shape):
+    return CSRMatrix(
+        indptr=cp.asarray(indptr, dtype=cp.int32),
+        indices=cp.asarray(indices, dtype=cp.int32),
+        data=cp.asarray(data, dtype=cp.int32),
+        shape=shape,
+    )
+
+
+def _random_canonical_csr(rng, shape, density):
+    from scipy.sparse import random as sp_random
+
+    mat = sp_random(*shape, density=density, format="csr", random_state=rng)
+    mat.data = rng.integers(1, 1000, size=mat.nnz).astype(np.int32)
+    mat.sort_indices()
+    return mat, _csr(mat.indptr, mat.indices, mat.data, shape)
+
+
+def _assert_csr_equal(csr, ref, index_dtype=cp.int32):
+    assert csr.shape == ref.shape
+    assert cp.asnumpy(csr.indptr).tolist() == ref.indptr.tolist()
+    assert cp.asnumpy(csr.indices).tolist() == ref.indices.tolist()
+    assert cp.asnumpy(csr.data).tolist() == ref.data.tolist()
+    assert csr.indptr.dtype == csr.indices.dtype == index_dtype
+    assert csr.data.dtype == cp.int32
+
+
+def test_merge_csr_is_exact_past_float32():
+    a = _csr([0, 1], [0], [2**24 - 1], (1, 1))
+    b = _csr([0, 1], [0], [2], (1, 1))
+    merged = _merge_csr(a, b)
+    # float32 cannot represent 2**24 + 1.
+    assert cp.asnumpy(merged.data).tolist() == [2**24 + 1]
+
+
+def test_merge_csr_matches_scipy_with_empty_rows_and_inputs():
+    rng = np.random.default_rng(3)
+    shape = (300, 50)
+    for density_a, density_b in [(0.1, 0.1), (0.0, 0.2), (0.2, 0.0), (0.0, 0.0)]:
+        ref_a, a = _random_canonical_csr(rng, shape, density_a)
+        ref_b, b = _random_canonical_csr(rng, shape, density_b)
+        ref = (ref_a + ref_b).tocsr()
+        ref.sort_indices()
+        _assert_csr_equal(_merge_csr(a, b), ref)
+
+
+def test_merge_csr_raises_on_count_overflow():
+    a = _csr([0, 1], [0], [2**31 - 1], (1, 1))
+    b = _csr([0, 1], [0], [1], (1, 1))
+    with pytest.raises(OverflowError, match="2\\^31-1"):
+        _merge_csr(a, b)
+    # The largest representable count still merges.
+    b = _csr([0, 1], [0], [0], (1, 1))
+    assert cp.asnumpy(_merge_csr(a, b).data).tolist() == [2**31 - 1]
+
+
+def test_merge_csr_switches_to_int64_indices(monkeypatch):
+    # Lower the int32 limit so small inputs take the int64 paths.
+    monkeypatch.setattr(aggregate_mod, "_INT32_MAX", 100)
+    rng = np.random.default_rng(5)
+    shape = (40, 30)
+    ref, acc = _random_canonical_csr(rng, shape, 0.05)
+    assert acc.nnz <= 100
+    for step in range(4):
+        ref_b, b = _random_canonical_csr(rng, shape, 0.1)
+        ref = (ref + ref_b).tocsr()
+        ref.sort_indices()
+        acc = _merge_csr(acc, b)  # int32 -> int64, then int64 -> int64
+        assert ref.nnz > 100, step
+        _assert_csr_equal(acc, ref, index_dtype=cp.int64)
+
+
+def test_aggregate_to_cells_returns_int64_indices_past_int32(monkeypatch):
+    monkeypatch.setattr(aggregate_mod, "_INT32_MAX", 10)
+    polys = _polys_from_squares([_square(float(x), 0, 0.4) for x in range(8)])
+    rng = np.random.default_rng(2)
+    xs = rng.integers(0, 8, size=500).astype(np.float32)
+    genes = rng.integers(0, 6, size=500).astype(np.int32)
+    pts = np.stack([xs, np.zeros_like(xs)], axis=1)
+    batches = [
+        (cp.asarray(pts[i : i + 100]), cp.asarray(genes[i : i + 100]))
+        for i in range(0, 500, 100)
+    ]
+    csr = cs.tl.aggregate_to_cells(batches, polys, num_genes=6)
+
+    from scipy.sparse import csr_matrix as sp_csr
+
+    ref = sp_csr(
+        (np.ones(500, dtype=np.int32), (xs.astype(np.int64), genes)), shape=(8, 6)
+    )
+    ref.sum_duplicates()
+    ref.sort_indices()
+    _assert_csr_equal(csr, ref, index_dtype=cp.int64)
+    with pytest.raises(OverflowError, match="cupyx"):
+        csr.to_cupy_csr()
+
+
+def test_merge_csr_past_int32_nnz_on_device():
+    """A real merge past 2^31-1 non-zeros; needs a large GPU, so CI often skips."""
+    if cp.cuda.Device().mem_info[0] < 48 * 2**30:
+        pytest.skip("needs about 48 GiB of free GPU memory")
+    rows, genes = 2**21, 2**10  # rows * genes == 2**31
+    nnz_a = rows * genes - 1  # the last (row, gene) is missing
+    indptr = cp.minimum(cp.arange(rows + 1, dtype=cp.int64) * genes, nnz_a)
+    a = CSRMatrix(
+        indptr=indptr.astype(cp.int32),
+        indices=cp.tile(cp.arange(genes, dtype=cp.int32), rows)[:nnz_a],
+        data=cp.ones(nnz_a, dtype=cp.int32),
+        shape=(rows, genes),
+    )
+    del indptr
+    # B adds the missing entry and bumps the first one.
+    b_indptr = cp.zeros(rows + 1, dtype=cp.int32)
+    b_indptr[1:] = 1
+    b_indptr[-1] = 2
+    b = _csr(b_indptr, [0, genes - 1], [5, 7], (rows, genes))
+
+    merged = _merge_csr(a, b)
+    del a
+    assert merged.nnz == 2**31
+    assert merged.indptr.dtype == merged.indices.dtype == cp.int64
+    assert int(merged.indptr[-1]) == 2**31
+    assert int(merged.indptr[-2]) == 2**31 - genes
+    assert int(merged.indices[-1]) == genes - 1
+    assert cp.asnumpy(merged.data[[0, 1, -2, -1]]).tolist() == [6, 1, 1, 7]
+    assert int(merged.data.sum(dtype=cp.int64)) == 2**31 - 1 + 12
+
+    # int64 accumulator + int32 batch.
+    again = _merge_csr(merged, b)
+    del merged
+    assert again.nnz == 2**31
+    assert cp.asnumpy(again.data[[0, -1]]).tolist() == [11, 14]
+
+
+def test_aggregate_to_cells_counts_past_float32_limit():
+    polys = _polys_from_squares([_square(0, 0, 1)])
+    n = 2**24
+    batches = [
+        (cp.zeros((n, 2), dtype=cp.float32), cp.zeros(n, dtype=cp.int32)),
+        (cp.zeros((1, 2), dtype=cp.float32), cp.zeros(1, dtype=cp.int32)),
+    ]
+    csr = cs.tl.aggregate_to_cells(batches, polys, num_genes=1)
+    assert cp.asnumpy(csr.data).tolist() == [2**24 + 1]
+
+
+def test_aggregate_to_cells_many_overlapping_batches_match_scipy():
+    from scipy.sparse import csr_matrix as sp_csr
+
+    rng = np.random.default_rng(11)
+    side = 10
+    squares = [
+        _square(float(x), float(y), 0.45) for y in range(side) for x in range(side)
+    ]
+    polys = _polys_from_squares(squares)
+
+    N, G, num_batches = 40_000, 30, 13
+    pts_host = rng.uniform(-0.5, side - 0.5, size=(N, 2)).astype(np.float32)
+    genes_host = rng.integers(0, G, size=N).astype(np.int32)
+    splits = np.sort(rng.choice(np.arange(1, N), size=num_batches - 1, replace=False))
+    batches = [
+        (cp.asarray(p), cp.asarray(g))
+        for p, g in zip(np.split(pts_host, splits), np.split(genes_host, splits))
+    ]
+    csr = cs.tl.aggregate_to_cells(batches, polys, num_genes=G)
+
+    ix = np.rint(pts_host[:, 0]).astype(np.int64)
+    iy = np.rint(pts_host[:, 1]).astype(np.int64)
+    inside = (np.abs(pts_host[:, 0] - ix) <= 0.45) & (
+        np.abs(pts_host[:, 1] - iy) <= 0.45
+    )
+    cells = (iy * side + ix)[inside]
+    ref = sp_csr(
+        (np.ones(cells.size, dtype=np.int32), (cells, genes_host[inside])),
+        shape=(side * side, G),
+    )
+    ref.sum_duplicates()
+    ref.sort_indices()
+    _assert_csr_equal(csr, ref)
 
 
 def test_aggregate_all_unassigned_returns_empty():
