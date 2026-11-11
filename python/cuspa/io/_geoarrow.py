@@ -47,6 +47,11 @@ def _as_arrow_table_or_array(obj: Any) -> tuple[Any | None, Any | None]:
 
 
 def _field_extension_name(field: Any) -> str | None:
+    # A registered extension type (e.g. by geoarrow-pyarrow) carries the name
+    # in the type; otherwise it is only in the field metadata.
+    name = getattr(field.type, "extension_name", None)
+    if name is not None:
+        return name
     meta = field.metadata or {}
     value = meta.get(b"ARROW:extension:name")
     return value.decode() if value is not None else None
@@ -143,6 +148,8 @@ def _coords_from_vertices(vertices: Any, dtype: Any):
 def _polygon_array_to_offsets(array: Any, dtype: Any):
     """Return ``(part_offsets, ring_offsets, coords)`` for Polygon/MultiPolygon."""
     array = _combine(array)
+    # Extension arrays wrap the GeoArrow list layout in their storage.
+    array = getattr(array, "storage", array)
     if not _is_list_array(array):
         raise TypeError(
             f"expected GeoArrow Polygon/MultiPolygon list array, got {array.type}"

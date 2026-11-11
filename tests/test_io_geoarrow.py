@@ -105,6 +105,38 @@ def test_from_geoarrow_normalizes_sliced_array_offsets():
     assert cp.asnumpy(polys.ensure_aabbs()).tolist() == [[10.0, 10.0, 11.0, 11.0]]
 
 
+class _GeoArrowPolygonType(pa.ExtensionType):
+    # Stands in for the type geoarrow-pyarrow registers for geoarrow.polygon.
+    def __init__(self, storage_type):
+        super().__init__(storage_type, "geoarrow.polygon")
+
+    def __arrow_ext_serialize__(self):
+        return b"{}"
+
+    @classmethod
+    def __arrow_ext_deserialize__(cls, storage_type, serialized):
+        return cls(storage_type)
+
+
+def test_from_geoarrow_accepts_extension_type_arrays():
+    geos = gpd.GeoSeries(
+        [
+            Polygon([(0, 0), (1, 0), (1, 1), (0, 0)]),
+            Polygon([(10, 10), (11, 10), (11, 11), (10, 10)]),
+        ]
+    )
+    storage = pa.array(
+        geos.to_arrow(geometry_encoding="geoarrow", interleaved=True, include_z=False)
+    )
+    array = pa.ExtensionArray.from_storage(_GeoArrowPolygonType(storage.type), storage)
+    expected = [[0.0, 0.0, 1.0, 1.0], [10.0, 10.0, 11.0, 11.0]]
+
+    for obj in (array, pa.chunked_array([array]), pa.table({"cells": array})):
+        polys = cs.io.from_geoarrow(obj)
+        assert polys.num_polygons == 2
+        assert cp.asnumpy(polys.ensure_aabbs()).tolist() == expected
+
+
 def test_from_geoarrow_rejects_wkb_encoding():
     gdf = gpd.GeoDataFrame(geometry=[Point(0, 0)])
     table = pa.table(gdf.to_arrow())
