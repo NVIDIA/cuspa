@@ -55,6 +55,23 @@ def test_from_geopandas_multipolygon_keeps_one_row_per_geometry():
     assert ids.tolist() == [0, 0, -1]
 
 
+def test_from_geopandas_uses_active_geometry_column():
+    cells = gpd.GeoSeries(
+        [
+            Polygon([(0, 0), (4, 0), (4, 4), (0, 4), (0, 0)]),
+            Polygon([(10, 10), (14, 10), (14, 14), (10, 14), (10, 10)]),
+        ]
+    )
+    nuclei = cells.scale(0.5, 0.5)
+    expected = [[0.0, 0.0, 4.0, 4.0], [10.0, 10.0, 14.0, 14.0]]
+
+    # Other geometry columns come first in the frame; only the active one counts.
+    for other in ({"nucleus": nuclei}, {"centroid": cells.centroid}):
+        gdf = gpd.GeoDataFrame({**other, "cell": cells}, geometry="cell")
+        polys = cs.io.from_geopandas(gdf)
+        assert cp.asnumpy(polys.ensure_aabbs()).tolist() == expected
+
+
 def test_from_geoarrow_accepts_geodataframe_arrow_table():
     gdf = gpd.GeoDataFrame(
         {"name": ["a", "b"]},

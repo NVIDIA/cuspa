@@ -215,9 +215,14 @@ def from_geopandas(
     dtype: Any = None,
     include_z: bool | None = False,
 ) -> Polygons:
-    """Convert a GeoPandas GeoDataFrame or GeoSeries to ``Polygons``."""
+    """Convert a GeoPandas GeoDataFrame or GeoSeries to ``Polygons``.
+
+    ``geometry`` defaults to the active geometry column of a GeoDataFrame.
+    """
     if not hasattr(gdf, "to_arrow"):
         raise TypeError("expected a GeoPandas object with a to_arrow() method")
+    if geometry is None:
+        geometry = getattr(gdf, "active_geometry_name", None)
 
     arrow = gdf.to_arrow(
         geometry_encoding="geoarrow",
