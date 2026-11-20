@@ -15,6 +15,19 @@ namespace nb = nanobind;
 
 namespace cuspa {
 
+void* allocate_scratch(std::size_t bytes, cudaStream_t stream) {
+  void* ptr = nullptr;
+  auto err  = cudaMallocAsync(&ptr, bytes, stream);
+  if (err == cudaErrorMemoryAllocation) {
+    (void)cudaGetLastError();
+    nb::gil_scoped_acquire guard;
+    nb::module_::import_("cuspa._memory").attr("release_cached_blocks")();
+    err = cudaMallocAsync(&ptr, bytes, stream);
+  }
+  CS_CHECK(err);
+  return ptr;
+}
+
 void synchronize_stream(std::uintptr_t stream_handle) {
   auto const stream = reinterpret_cast<cudaStream_t>(stream_handle);
   CS_CHECK(cudaStreamSynchronize(stream));
@@ -28,5 +41,6 @@ NB_MODULE(_core, m) {
   cuspa::bind_index_ops(m);
   cuspa::bind_query_ops(m);
   cuspa::bind_aggregate_ops(m);
+  cuspa::bind_host_plan(m);
   m.def("synchronize_stream", &cuspa::synchronize_stream, nb::arg("stream") = std::uintptr_t{0});
 }

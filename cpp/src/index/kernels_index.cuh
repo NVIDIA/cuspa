@@ -26,20 +26,20 @@ __global__ void poly_aabb_kernel(std::int32_t const* part_offsets,
                                  std::int32_t const* ring_offsets,
                                  T const* xy,
                                  T* out_aabbs /* [P, 4] */) {
-  auto const p      = blockIdx.x;
+  auto const p      = static_cast<std::int64_t>(blockIdx.x);
   auto const tid    = threadIdx.x;
   auto const stride = blockDim.x;
 
   std::int32_t const ring_begin_idx = part_offsets[p];
   std::int32_t const ring_end_idx   = part_offsets[p + 1];
-  std::int32_t const pt_begin       = ring_offsets[ring_begin_idx];
+  std::int64_t const pt_begin       = ring_offsets[ring_begin_idx];
   std::int32_t const pt_end         = ring_offsets[ring_end_idx];
 
   T const pos_inf = std::is_same_v<T, float> ? T(3.4e38) : T(1e308);
   T const neg_inf = -pos_inf;
 
   T lminx = pos_inf, lminy = pos_inf, lmaxx = neg_inf, lmaxy = neg_inf;
-  for (std::int32_t i = pt_begin + tid; i < pt_end; i += stride) {
+  for (std::int64_t i = pt_begin + tid; i < pt_end; i += stride) {
     T const x = xy[2 * i + 0];
     T const y = xy[2 * i + 1];
     if (x < lminx)

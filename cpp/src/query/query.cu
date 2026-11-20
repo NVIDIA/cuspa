@@ -245,7 +245,8 @@ void overlap_emit_entry(DeviceArray<Device> points_xy,
                         DeviceArray<Device> offsets,
                         DeviceArray<Device> out_pairs,
                         int edge_inclusive,
-                        std::uintptr_t stream_handle) {
+                        std::uintptr_t stream_handle,
+                        std::int64_t pair_start) {
   _validate_query_inputs(points_xy,
                          origin_x,
                          origin_y,
@@ -259,6 +260,8 @@ void overlap_emit_entry(DeviceArray<Device> points_xy,
                          part_offsets,
                          ring_offsets,
                          poly_points_xy);
+  if (pair_start < 0)
+    throw std::invalid_argument("pair_start must be non-negative");
   _require_1d(offsets, "offsets");
   _require_int64(offsets, "offsets");
   if (out_pairs.ndim() != 2 || out_pairs.shape(1) != 2)
@@ -297,6 +300,8 @@ void overlap_emit_entry(DeviceArray<Device> points_xy,
                             static_cast<float const*>(poly_points_xy.data()),
                             edge_inclusive,
                             off_p,
+                            pair_start,
+                            out_pairs.shape(0),
                             out_p,
                             stream);
   } else if (points_xy.dtype() == nb::dtype<double>()) {
@@ -316,6 +321,8 @@ void overlap_emit_entry(DeviceArray<Device> points_xy,
                              static_cast<double const*>(poly_points_xy.data()),
                              edge_inclusive,
                              off_p,
+                             pair_start,
+                             out_pairs.shape(0),
                              out_p,
                              stream);
   } else {
@@ -385,6 +392,7 @@ void bind_query_device(nb::module_& m) {
         nb::arg("out_pairs"),
         nb::arg("edge_inclusive") = 0,
         nb::arg("stream")         = std::uintptr_t{0},
+        nb::arg("pair_start")     = std::int64_t{0},
         "Pass 2 of many-to-many overlap_pairs: fill (K, 2) int32 pairs using "
         "offsets from overlap_count_and_scan.");
 }

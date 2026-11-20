@@ -69,7 +69,7 @@ def test_aggregate_wraps_to_cupyx_csr():
     assert dense.tolist() == [[0, 0, 0, 2, 0]]
 
 
-def test_aggregate_to_cells_accumulates_batches_on_device():
+def test_aggregate_to_cells_accumulates_batches_on_device(monkeypatch):
     polys = _polys_from_squares([_square(0, 0, 1), _square(10, 10, 1)])
     points = cp.asarray(
         [[0.0, 0.0], [0.5, 0.5], [-0.5, -0.5], [10.0, 10.0], [5.0, 5.0]],
@@ -78,7 +78,11 @@ def test_aggregate_to_cells_accumulates_batches_on_device():
     gene_ids = cp.asarray([0, 0, 1, 2, 0], dtype=cp.int32)
 
     batches = [(points[:2], gene_ids[:2]), (points[2:], gene_ids[2:])]
-    streamed = cs.tl.aggregate_to_cells(batches, polys, num_genes=3)
+    with monkeypatch.context() as m:
+        m.setattr(aggregate_mod, "_INT32_MAX", 2)
+        slices = aggregate_mod._bounded_pairs(batches, polys.points_xy)
+        assert [len(p) for p, _, _ in slices] == [2, 2, 1]
+        streamed = cs.tl.aggregate_to_cells(batches, polys, num_genes=3)
     expected = _aggregate(points, gene_ids, polys, num_genes=3)
 
     assert type(streamed.data).__module__.split(".", 1)[0] == "cupy"
@@ -349,3 +353,159 @@ def test_csr_converts_to_torch():
 
     dense = csr.to_torch_sparse(dtype=torch.float32).to_dense().cpu().tolist()
     assert dense == [[0.0, 2.0]]
+
+
+def test_numpy_aggregate_sizes_before_upload():
+    polys = _polys_from_squares([_square(0, 0, 1)])
+    polys.ensure_index()
+    xy = np.zeros((400_000, 4), dtype=np.float64)[:, ::2]
+    ids = np.zeros(len(xy), np.int32)
+    pool = cp.cuda.MemoryPool()
+    pool.set_limit(size=2 << 20)
+    stream = cp.cuda.Stream(non_blocking=True)
+    with cp.cuda.using_allocator(pool.malloc):
+        for block, _, _ in aggregate_mod._bounded_pairs([(xy, ids)], polys.points_xy):
+            assert isinstance(block, np.ndarray) and len(block) < len(xy)
+        result = cs.tl.aggregate_to_cells([(xy, ids)], polys, 1, stream=stream.ptr)
+        assert result.data.tolist() == [len(xy)]
+        with pytest.raises(TypeError, match="int32 gene_ids"):
+            cs.tl.aggregate_to_cells([(xy, ids.astype(np.int64))], polys, 1)
+
+
+@pytest.mark.parametrize("force_oom", [False, True], ids=["fits", "merge_oom"])
+def test_replayable_numpy_aggregate_reads_only_when_needed(monkeypatch, force_oom):
+    polys = _polys_from_squares([_square(0, 0, 1)])
+    points = np.array([[0, 0], [0, 0], [5, 5]], np.float32)
+    reads = []
+
+    class Batches(list):
+        def __iter__(self):
+            for i, batch in enumerate(super().__iter__()):
+                reads.append(i)
+                yield batch
+
+    merges = 0
+
+    def merge(a, b, **kwargs):
+        nonlocal merges
+        if a is not None:
+            merges += 1
+            if force_oom and merges == 2:
+                raise MemoryError("GPU merge exhausted its workspace")
+        return _merge_csr(a, b, **kwargs)
+
+    monkeypatch.setattr(aggregate_mod, "_merge_csr", merge)
+    batches = Batches((points, np.array([gene, 1, 0], np.int32)) for gene in range(4))
+    csr = cs.tl.aggregate_to_cells(batches, polys, 4, num_cells=2)
+    assert reads == [0, 1, 2, 3] * (2 if force_oom else 1)
+    if force_oom:
+        assert merges >= 2
+    assert all(isinstance(a, np.ndarray) for a in (csr.indptr, csr.indices, csr.data))
+    assert csr.indptr.tolist() == [0, 4, 4] and csr.indices.tolist() == [0, 1, 2, 3]
+    assert csr.data.tolist() == [1, 5, 1, 1]
+
+
+@pytest.mark.parametrize("source", ["numpy", "device", "iterator"])
+def test_exact_host_csr_handles_duplicates_and_empty_rows(monkeypatch, source):
+    from scipy.sparse import csr_matrix
+
+    polys = _polys_from_squares([_square(0, 0, 1), _square(5, 5, 1)])
+    points = np.asarray([[0, 0], [0, 0], [5, 5], [0, 0], [9, 9]], np.float32)
+    ids = np.asarray([514, 0, 514, -1, 6], np.int32)
+    monkeypatch.setattr(aggregate_mod, "_INT32_MAX", 2)
+    if source != "numpy":
+        points, ids = cp.asarray(points), cp.asarray(ids)
+
+        def exhausted(a, b, **kwargs):
+            if a is not None:
+                raise RuntimeError("CUDA error: out of memory")
+            return b
+
+        monkeypatch.setattr(aggregate_mod, "_merge_csr", exhausted)
+    batches = [(points, ids)] * 3
+    csr = cs.tl.aggregate_to_cells(
+        iter(batches) if source == "iterator" else batches, polys, 600, num_cells=5
+    )
+    assert isinstance(csr.data, np.ndarray)
+    assert csr.shape == (5, 600) and csr.indices.dtype == csr.indptr.dtype == np.int64
+    assert csr.indptr.tolist() == [0, 2, 3, 3, 3, 3]
+    assert csr.indices.tolist() == [0, 514, 514] and csr.data.tolist() == [3, 3, 3]
+    assert csr_matrix(
+        (csr.data, csr.indices, csr.indptr), shape=csr.shape
+    ).has_canonical_format
+
+
+@pytest.mark.parametrize("wrapped", [False, True], ids=["iterator", "cursor_wrapper"])
+@pytest.mark.parametrize("size", [4, 300_000], ids=["fits", "exceeds_gpu_limit"])
+def test_one_shot_numpy_aggregate(wrapped, size):
+    polys = _polys_from_squares([_square(0, 0, 1)])
+    polys.ensure_index()
+    batch = (np.zeros((size, 2), np.float32), np.arange(size, dtype=np.int32))
+    cursor = iter([batch, batch])
+
+    class Batches:
+        def __iter__(self):
+            yield from cursor
+
+    pool = cp.cuda.MemoryPool()
+    pool.set_limit(size=2 << 20)
+    with cp.cuda.using_allocator(pool.malloc):
+        csr = cs.tl.aggregate_to_cells(Batches() if wrapped else cursor, polys, size)
+    assert all(isinstance(a, np.ndarray) for a in (csr.indptr, csr.indices, csr.data))
+    assert csr.indptr.tolist() == [0, size]
+    np.testing.assert_array_equal(csr.indices, batch[1])
+    np.testing.assert_array_equal(csr.data, 2)
+
+
+def test_host_csr_rejects_count_overflow_across_batches():
+    key = np.zeros(1, np.int32)
+    first = [(key, key, np.asarray([value], np.int32)) for value in (2**31 - 1, 1)]
+    with pytest.raises(OverflowError):
+        aggregate_mod._host_csr((1, 1), first, None)
+
+
+def test_host_csr_rejects_missing_pairs_on_second_pass():
+    key = np.zeros(1, np.int32)
+    with pytest.raises(ValueError, match="changed between aggregation passes"):
+        aggregate_mod._host_csr((1, 1), [(key, key, None)], lambda: ())
+
+
+def test_aggregate_does_not_return_partial_input_on_source_error():
+    polys = _polys_from_squares([_square(0, 0, 1)])
+
+    def broken():
+        yield cp.zeros((1, 2), cp.float32), cp.zeros(1, cp.int32)
+        raise MemoryError("failed to load second batch")
+
+    with pytest.raises(MemoryError, match="second batch"):
+        cs.tl.aggregate_to_cells(broken(), polys, 1)
+
+
+@pytest.mark.parametrize("fmt", ["parquet", "ipc"])
+def test_aggregate_arrow_dataset(tmp_path, fmt):
+    pa = pytest.importorskip("pyarrow")
+    import pyarrow.dataset as ds
+
+    polys = _polys_from_squares([_square(0, 0, 1)])
+    genes = pa.array(["Z", None, "A", "Z", "outside"]).dictionary_encode()
+    table = pa.table(
+        {
+            "x_location": [0.0, 0.5, 0.0, 0.0, 10.0],
+            "y_location": [0.0] * 5,
+            "gene": genes,
+        }
+    )
+    ds.write_dataset(table, tmp_path, format=fmt)
+    source = ds.dataset(tmp_path, format=fmt)
+    for view, names in [
+        (source, ["A", "Z", "outside"]),
+        (source.filter(ds.field("x_location") < 1.0), ["A", "Z"]),
+        (source.filter(ds.field("x_location") > 100.0), []),
+    ]:
+        csr = cs.tl.aggregate_to_cells(view, polys, gene_column="gene")
+        assert csr.shape == (1, len(names))
+        assert csr.gene_names == names
+        assert isinstance(csr.data, np.ndarray)
+        assert csr.indptr.tolist() == [0, 2 if names else 0]
+        assert csr.indices.tolist() == ([0, 1] if names else [])
+        assert csr.data.tolist() == ([1, 2] if names else [])

@@ -12,5 +12,6 @@ namespace cuspa {
 void bind_index_ops(nanobind::module_& m);
 void bind_query_ops(nanobind::module_& m);
 void bind_aggregate_ops(nanobind::module_& m);
+void bind_host_plan(nanobind::module_& m);
 
 }  // namespace cuspa

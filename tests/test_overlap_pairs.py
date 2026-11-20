@@ -163,3 +163,28 @@ def test_overlap_pairs_int32_max_input_points():
     points[-1] = 0
     pairs = cs.tl.overlap_pairs(points, polys)
     assert cp.asnumpy(pairs).tolist() == [[n_points - 1, 0]]
+
+
+@pytest.mark.parametrize("device_points", [False, True])
+def test_overlap_batches_dense_points_and_keeps_global_ids(monkeypatch, device_points):
+    from cuspa.tl import _assign
+
+    polys = _polys_from_squares([_square(0, 0, 1)] * 7)
+    points = cp.asarray([[0, 0], [3, 3], [1, 0], [0, 0]], dtype=cp.float32)
+    expected = cs.tl.overlap_pairs(points, polys, predicate="intersects").get()
+    monkeypatch.setattr(_assign, "_ASSIGN_WORK_BYTES", 128)
+    allocate = _assign._empty_int32_like
+
+    def limited(ref, shape):
+        if shape[0] > 4:
+            raise MemoryError
+        return allocate(ref, shape)
+
+    monkeypatch.setattr(_assign, "_empty_int32_like", limited)
+    stream = cp.cuda.Stream(non_blocking=True)
+    source = points if device_points else iter([points[:2].get(), points[2:].get()])
+    result = cs.tl.overlap_pairs(
+        source, polys, predicate="intersects", stream=stream.ptr
+    )
+    assert isinstance(result, np.ndarray) and result.dtype == np.int64
+    np.testing.assert_array_equal(result, expected)
