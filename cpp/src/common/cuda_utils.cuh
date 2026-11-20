@@ -19,9 +19,12 @@ namespace cuspa {
   do {                                                                                  \
     auto _err = (expr);                                                                 \
     if (_err != cudaSuccess) {                                                          \
+      (void)cudaGetLastError();                                                         \
       throw std::runtime_error(std::string{"CUDA error: "} + cudaGetErrorString(_err)); \
     }                                                                                   \
   } while (0)
+
+void* allocate_scratch(std::size_t bytes, cudaStream_t stream);
 
 struct DeviceScratch {
   void* ptr     = nullptr;
@@ -39,10 +42,13 @@ struct DeviceScratch {
   void resize(std::size_t bytes) {
     if (bytes <= n)
       return;
-    if (ptr)
+    if (ptr) {
       CS_CHECK(cudaFreeAsync(ptr, stream));
-    CS_CHECK(cudaMallocAsync(&ptr, bytes, stream));
-    n = bytes;
+      ptr = nullptr;
+      n   = 0;
+    }
+    ptr = allocate_scratch(bytes, stream);
+    n   = bytes;
   }
 };
 
@@ -53,7 +59,7 @@ struct DeviceBuffer {
 
   DeviceBuffer(std::size_t count, cudaStream_t s) : stream{s} {
     if (count)
-      CS_CHECK(cudaMallocAsync(&ptr, sizeof(T) * count, stream));
+      ptr = static_cast<T*>(allocate_scratch(sizeof(T) * count, stream));
   }
   ~DeviceBuffer() {
     if (ptr)

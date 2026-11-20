@@ -42,13 +42,7 @@ wheel targets and source-build details.
 import cuspa as cs
 
 polys = cs.io.from_spatialdata(sdata, "cell_boundaries")
-tx = cs.io.transcripts_from_spatialdata(sdata, "transcripts")
-
-csr = cs.tl.aggregate_to_cells(
-    [(tx.xy, tx.gene_ids)],
-    polys,
-    num_genes=len(tx.gene_names),
-)
+csr = cs.tl.aggregate_to_cells(sdata.points["transcripts"], polys)
 ```
 
 ## Documentation

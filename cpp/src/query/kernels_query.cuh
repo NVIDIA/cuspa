@@ -56,7 +56,7 @@ __global__ void assign_points_kernel(T const* points_xy,
   std::int32_t const end      = grid_offsets[cell_idx + 1];
 
   for (std::int32_t i = beg; i < end; ++i) {
-    std::int32_t const p = poly_ids[i];
+    std::int64_t const p = poly_ids[i];
 
     T const minx = poly_aabbs[4 * p + 0];
     T const miny = poly_aabbs[4 * p + 1];
@@ -122,7 +122,7 @@ __global__ void overlap_count_kernel(T const* points_xy,
 
   std::int32_t n_hits = 0;
   for (std::int32_t i = beg; i < end; ++i) {
-    std::int32_t const p = poly_ids[i];
+    std::int64_t const p = poly_ids[i];
     T const minx         = poly_aabbs[4 * p + 0];
     T const miny         = poly_aabbs[4 * p + 1];
     T const maxx         = poly_aabbs[4 * p + 2];
@@ -156,9 +156,12 @@ __global__ void overlap_emit_kernel(T const* points_xy,
                                     T const* poly_xy,
                                     int edge_inclusive,
                                     std::int64_t const* offsets /* [N+1] */,
+                                    std::int64_t pair_start,
+                                    std::int64_t pair_count,
                                     std::int32_t* pairs /* [K, 2] flattened */) {
   auto const tid = static_cast<std::int64_t>(blockIdx.x) * blockDim.x + threadIdx.x;
-  if (tid >= num_points)
+  if (tid >= num_points || offsets[tid + 1] <= pair_start ||
+      offsets[tid] - pair_start >= pair_count)
     return;
 
   T const px = points_xy[2 * tid + 0];
@@ -176,10 +179,10 @@ __global__ void overlap_emit_kernel(T const* points_xy,
   std::int32_t const beg      = grid_offsets[cell_idx];
   std::int32_t const end      = grid_offsets[cell_idx + 1];
 
-  std::int64_t slot = offsets[tid];
+  std::int64_t slot = offsets[tid] - pair_start;
 
   for (std::int32_t i = beg; i < end; ++i) {
-    std::int32_t const p = poly_ids[i];
+    std::int64_t const p = poly_ids[i];
     T const minx         = poly_aabbs[4 * p + 0];
     T const miny         = poly_aabbs[4 * p + 1];
     T const maxx         = poly_aabbs[4 * p + 2];
@@ -190,9 +193,12 @@ __global__ void overlap_emit_kernel(T const* points_xy,
     std::int32_t const rb = part_offsets[p];
     std::int32_t const re = part_offsets[p + 1];
     if (is_point_in_polygon<T>(px, py, ring_offsets, rb, re - rb, poly_xy, edge_inclusive)) {
-      pairs[2 * slot + 0] = static_cast<std::int32_t>(tid);
-      pairs[2 * slot + 1] = p;
-      ++slot;
+      if (slot >= 0) {
+        pairs[2 * slot + 0] = static_cast<std::int32_t>(tid);
+        pairs[2 * slot + 1] = p;
+      }
+      if (++slot == pair_count)
+        return;
     }
   }
 }
@@ -316,6 +322,8 @@ void run_overlap_emit(T const* points_xy,
                       T const* poly_xy,
                       int edge_inclusive,
                       std::int64_t const* offsets,
+                      std::int64_t pair_start,
+                      std::int64_t pair_count,
                       std::int32_t* pairs_out,
                       cudaStream_t stream) {
   if (num_points == 0)
@@ -337,6 +345,8 @@ void run_overlap_emit(T const* points_xy,
                                                            poly_xy,
                                                            edge_inclusive,
                                                            offsets,
+                                                           pair_start,
+                                                           pair_count,
                                                            pairs_out);
   CS_CHECK(cudaGetLastError());
 }

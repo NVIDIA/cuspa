@@ -21,10 +21,14 @@ nanobind_add_module(
   LTO
   NB_STATIC
   src/aggregate/aggregate.cu
+  src/aggregate/host_plan.cpp
   src/index/index.cu
   src/module.cpp
   src/query/query.cu
 )
+
+# nanobind defaults to -Os. Optimize the per-transcript host loops for throughput.
+set_source_files_properties(src/aggregate/host_plan.cpp PROPERTIES COMPILE_OPTIONS "$<$<CONFIG:Release>:-O3>")
 
 target_link_libraries(_core PRIVATE CUDA::cudart)
 

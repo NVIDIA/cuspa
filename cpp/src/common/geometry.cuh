@@ -62,7 +62,7 @@ __device__ inline bool is_point_in_polygon(T px,
 
   for (std::int32_t r = 0; r < polygon_num_rings; ++r) {
     std::int32_t const ring_begin = ring_offsets[ring_begin_idx + r];
-    std::int32_t const ring_end   = ring_offsets[ring_begin_idx + r + 1];
+    std::int64_t const ring_end   = ring_offsets[ring_begin_idx + r + 1];
     if (ring_end - ring_begin < 2)
       continue;
 
@@ -71,7 +71,7 @@ __device__ inline bool is_point_in_polygon(T px,
     bool y0_flag = by > py;
 
     bool point_on_edge = false;
-    for (std::int32_t i = ring_begin; i < ring_end; ++i) {
+    for (std::int64_t i = ring_begin; i < ring_end; ++i) {
       T const ax = xy[2 * i + 0];
       T const ay = xy[2 * i + 1];
 

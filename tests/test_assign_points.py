@@ -6,6 +6,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import textwrap
+from unittest.mock import Mock
 
 import pytest
 
@@ -67,6 +68,71 @@ def test_assign_exact_containment():
     ids = cs.tl.assign_points(points, polys)
     assert ids.dtype == cp.int32
     assert ids.tolist() == [0, 1, -1, 0, -1, -1]
+
+
+def test_assign_numpy_under_workspace_limit():
+    polys = _polys_from_squares([_square(0, 0, 1)])
+    polys.ensure_index()
+    pattern = np.array([[0, 1, 3, -1, 0.5], [0, 0, 0, 0, 0]], dtype=np.float32)
+    coords = np.tile(pattern, 20_000).T
+    stream = cp.cuda.Stream(non_blocking=True)
+    pool = cp.cuda.MemoryPool()
+    pool.set_limit(size=1 << 20)
+    with cp.cuda.using_allocator(lambda n: pool.malloc(n)):
+        labels = cs.tl.assign_points(
+            coords, polys, predicate="intersects", stream=stream.ptr
+        )
+    assert isinstance(labels, np.ndarray) and labels.dtype == np.int32
+    expected = np.tile([0, 0, -1, 0, 0], 20_000)
+    np.testing.assert_array_equal(labels, expected)
+    out = np.empty(5, dtype=np.int32)
+    assert cs.tl.assign_points(coords[:5], polys, out=out) is out
+    assert out.tolist() == [0, -1, -1, -1, 0]
+    empty = cs.tl.assign_points(coords[:0], polys)
+    assert isinstance(empty, np.ndarray)
+    assert empty.shape == (0,) and empty.dtype == np.int32
+
+
+@pytest.mark.parametrize("pinned", [True, False])
+def test_assign_streams_into_chunk_writable_output(monkeypatch, pinned):
+    polys = _polys_from_squares([_square(0, 0, 1)])
+    if not pinned:
+        monkeypatch.setattr(
+            cp.cuda, "alloc_pinned_memory", Mock(side_effect=MemoryError)
+        )
+
+    class Target:
+        data = np.empty(4, np.int32)
+        shape, dtype = data.shape, data.dtype
+        written = 0
+
+        def __setitem__(self, key, value):
+            self.data[key] = value
+            self.written += len(value)
+
+    out = Target()
+
+    def points():
+        xy = np.zeros((1, 2), dtype=np.float32)
+        for i, x in enumerate([0, 5, 0, 5]):
+            assert i <= out.written + 1
+            xy[0, 0] = x
+            yield xy
+
+    assert cs.tl.assign_points(points(), polys, out=out) is out
+    assert out.data.tolist() == [0, -1, 0, -1]
+
+
+def test_assign_device_falls_back_when_complete_labels_exceed_gpu_budget(monkeypatch):
+    from cuspa.tl import _assign
+
+    polys = _polys_from_squares([_square(0, 0, 1)])
+    xy = cp.asarray([[0, 0], [2, 2], [0, 1]], dtype=cp.float32)
+    monkeypatch.setattr(_assign, "_empty_int32_like", Mock(side_effect=MemoryError))
+    monkeypatch.setattr(_assign, "_ASSIGN_WORK_BYTES", 12)
+    labels = cs.tl.assign_points(xy, polys)
+    assert isinstance(labels, np.ndarray)
+    assert labels.tolist() == [0, -1, -1]
 
 
 def test_hole_edge_extension_is_not_treated_as_boundary():
@@ -262,3 +328,24 @@ def test_assign_large_scale():
     assert (ids_host < P).all()
     hit_frac = (ids_host >= 0).mean()
     assert 0.05 < hit_frac < 0.9, f"unexpected hit fraction: {hit_frac}"
+
+
+def test_native_geometry_at_large_vertex_offset():
+    start = 2**30  # The vertex fits int32, but its interleaved XY offset does not.
+    if cp.cuda.Device().mem_info[0] < 9 * 2**30:
+        pytest.skip("needs 9 GiB of free GPU memory")
+    with cp.cuda.using_allocator(cp.cuda.MemoryPool().malloc):
+        xy = cp.empty((start + 5, 2), dtype=cp.float32)
+        xy[start:] = _square(0, 0, 1)
+        parts = cp.array([1, 2], dtype=cp.int32)  # Select only the last ring.
+        rings = cp.array([0, start, start + 5], dtype=cp.int32)
+        aabbs = cp.empty((1, 4), dtype=cp.float32)
+        _core.compute_poly_aabbs(parts, rings, xy, aabbs, 0)
+        assert aabbs.tolist() == [[-1, -1, 1, 1]]
+        offsets = cp.array([0, 1], dtype=cp.int32)
+        ids = cp.array([0], dtype=cp.int32)
+        points = cp.array([[0, 0], [2, 2]], dtype=cp.float32)
+        out = cp.empty(2, dtype=cp.int32)
+        grid = (-1.0, -1.0, 4.0, 4.0, 1, 1, offsets, ids)
+        _core.assign_points(points, *grid, aabbs, parts, rings, xy, out, 0, 0)
+        assert out.tolist() == [0, -1]
